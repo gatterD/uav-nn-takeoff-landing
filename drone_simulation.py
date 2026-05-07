@@ -21,30 +21,47 @@ class DroneEnv:
         # Размеры корпуса
         self.DRONE_SIZE = [0.25, 0.25, 0.08]
 
-        # Максимальная тяга одного мотора
+        # Максимальная тяга одного двигателя
         self.MAX_MOTOR_THRUST = 15.0
 
-        # Расстояние от центра до мотора
+        # Расстояние от центра до двигателя
         self.ARM_LENGTH = 0.25
 
-        # Коэффициенты аэродинамики
+        # Аэродинамика
         self.LINEAR_DRAG = 0.04
         self.QUADRATIC_DRAG = 0.02
         self.ANGULAR_DRAG = 0.05
 
-        # Коэффициенты моментов
+        # Моменты
         self.ROLL_TORQUE_COEFF = 1.5
         self.PITCH_TORQUE_COEFF = 1.5
         self.YAW_TORQUE_COEFF = 0.4
 
         # Ветер
-        self.WIND_FORCE = np.array([0.3, 0.0, 0.0])
+        self.WIND_FORCE = np.array([0.0, 0.0, 0.0])
 
         # Турбулентность
-        self.TURBULENCE = 0.15
+        self.TURBULENCE = 0.02
 
         # Шум сенсоров
-        self.SENSOR_NOISE = 0.002
+        self.SENSOR_NOISE = 0.001
+
+        # =========================================================
+        # PID КОНТРОЛЛЕР
+        # =========================================================
+
+        self.ROLL_KP = 2.5
+        self.ROLL_KD = 0.4
+
+        self.PITCH_KP = 2.5
+        self.PITCH_KD = 0.4
+
+        self.YAW_KP = 1.0
+
+        # Целевые значения
+        self.target_roll = 0.0
+        self.target_pitch = 0.0
+        self.target_yaw_rate = 0.0
 
         # =========================================================
         # ПОДКЛЮЧЕНИЕ
@@ -58,12 +75,12 @@ class DroneEnv:
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
         p.setGravity(0, 0, self.GRAVITY)
+
         p.setTimeStep(self.TIME_STEP)
 
-        # Улучшение стабильности физики
         p.setPhysicsEngineParameter(
             fixedTimeStep=self.TIME_STEP,
-            numSolverIterations=100,
+            numSolverIterations=100
         )
 
         # =========================================================
@@ -98,13 +115,12 @@ class DroneEnv:
             basePosition=[0, 0, 0.15]
         )
 
-        # Уменьшение скольжения
         p.changeDynamics(
             self.drone_id,
             -1,
             lateralFriction=1.0,
-            angularDamping=0.01,
-            linearDamping=0.01
+            linearDamping=0.01,
+            angularDamping=0.01
         )
 
     # =============================================================
@@ -119,7 +135,6 @@ class DroneEnv:
 
         euler = p.getEulerFromQuaternion(orn)
 
-        # Добавление шума сенсоров
         noise = lambda: np.random.normal(0, self.SENSOR_NOISE)
 
         return {
@@ -146,6 +161,92 @@ class DroneEnv:
         }
 
     # =============================================================
+    # PID СТАБИЛИЗАЦИЯ
+    # =============================================================
+
+    def stabilize(self, throttle):
+
+        state = self.get_state()
+
+        roll = state["roll"]
+        pitch = state["pitch"]
+
+        wx = state["wx"]
+        wy = state["wy"]
+        wz = state["wz"]
+
+        # =========================================================
+        # ROLL PID
+        # =========================================================
+
+        roll_error = self.target_roll - roll
+
+        roll_output = (
+                roll_error * self.ROLL_KP
+                - wx * self.ROLL_KD
+        )
+
+        # =========================================================
+        # PITCH PID
+        # =========================================================
+
+        pitch_error = self.target_pitch - pitch
+
+        pitch_output = (
+                pitch_error * self.PITCH_KP
+                - wy * self.PITCH_KD
+        )
+
+        # =========================================================
+        # YAW PID
+        # =========================================================
+
+        yaw_output = (
+                self.target_yaw_rate - wz
+        ) * self.YAW_KP
+
+        # =========================================================
+        # MOTOR MIXING
+        # =========================================================
+
+        front_left = (
+                throttle
+                - pitch_output
+                - roll_output
+                + yaw_output
+        )
+
+        front_right = (
+                throttle
+                - pitch_output
+                + roll_output
+                - yaw_output
+        )
+
+        rear_left = (
+                throttle
+                + pitch_output
+                - roll_output
+                - yaw_output
+        )
+
+        rear_right = (
+                throttle
+                + pitch_output
+                + roll_output
+                + yaw_output
+        )
+
+        motors = np.clip([
+            front_left,
+            front_right,
+            rear_left,
+            rear_right
+        ], 0.0, 1.0)
+
+        return motors
+
+    # =============================================================
     # МОТОРЫ
     # =============================================================
 
@@ -157,24 +258,16 @@ class DroneEnv:
             rear_right
     ):
 
-        motors = np.clip(
-            [
-                front_left,
-                front_right,
-                rear_left,
-                rear_right
-            ],
-            0.0,
-            1.0
-        )
+        motors = np.clip([
+            front_left,
+            front_right,
+            rear_left,
+            rear_right
+        ], 0.0, 1.0)
 
         thrusts = motors * self.MAX_MOTOR_THRUST
 
         total_thrust = np.sum(thrusts)
-
-        # =========================================================
-        # ЛОКАЛЬНАЯ ТЯГА
-        # =========================================================
 
         pos, orn = p.getBasePositionAndOrientation(self.drone_id)
 
@@ -213,16 +306,14 @@ class DroneEnv:
                 - (front_right + rear_left)
         ) * self.YAW_TORQUE_COEFF
 
-        torque = [
-            roll_torque,
-            pitch_torque,
-            yaw_torque
-        ]
-
         p.applyExternalTorque(
             self.drone_id,
             -1,
-            torque,
+            [
+                roll_torque,
+                pitch_torque,
+                yaw_torque
+            ],
             p.WORLD_FRAME
         )
 
@@ -237,16 +328,10 @@ class DroneEnv:
         lin_vel = np.array(lin_vel)
         ang_vel = np.array(ang_vel)
 
-        # =========================================================
-        # ЛИНЕЙНОЕ СОПРОТИВЛЕНИЕ
-        # =========================================================
-
+        # Линейное сопротивление
         drag_linear = -self.LINEAR_DRAG * lin_vel
 
-        # =========================================================
-        # КВАДРАТИЧНОЕ СОПРОТИВЛЕНИЕ
-        # =========================================================
-
+        # Квадратичное сопротивление
         drag_quadratic = (
                 -self.QUADRATIC_DRAG
                 * np.linalg.norm(lin_vel)
@@ -255,16 +340,10 @@ class DroneEnv:
 
         total_drag = drag_linear + drag_quadratic
 
-        # =========================================================
-        # ВЕТЕР
-        # =========================================================
-
+        # Ветер
         wind = self.WIND_FORCE.copy()
 
-        # =========================================================
-        # ТУРБУЛЕНТНОСТЬ
-        # =========================================================
-
+        # Турбулентность
         turbulence = np.random.normal(
             0,
             self.TURBULENCE,
@@ -285,10 +364,7 @@ class DroneEnv:
             p.WORLD_FRAME
         )
 
-        # =========================================================
-        # УГЛОВОЕ СОПРОТИВЛЕНИЕ
-        # =========================================================
-
+        # Угловое сопротивление
         angular_drag = (
                 -self.ANGULAR_DRAG
                 * ang_vel
@@ -307,21 +383,39 @@ class DroneEnv:
 
     def step(self, action):
 
-        """
-        action = [
-            front_left,
-            front_right,
-            rear_left,
-            rear_right
-        ]
+        # =========================================================
+        # HIGH LEVEL COMMANDS
+        # =========================================================
 
-        диапазон:
-        0..1
-        """
+        throttle = action["throttle"]
 
-        self.apply_motor_forces(*action)
+        self.target_roll = action["roll"]
+
+        self.target_pitch = action["pitch"]
+
+        self.target_yaw_rate = action["yaw_rate"]
+
+        # =========================================================
+        # PID STABILIZATION
+        # =========================================================
+
+        motor_commands = self.stabilize(throttle)
+
+        # =========================================================
+        # APPLY MOTORS
+        # =========================================================
+
+        self.apply_motor_forces(*motor_commands)
+
+        # =========================================================
+        # AERODYNAMICS
+        # =========================================================
 
         self.apply_aerodynamics()
+
+        # =========================================================
+        # PHYSICS STEP
+        # =========================================================
 
         p.stepSimulation()
 
@@ -348,4 +442,5 @@ class DroneEnv:
     # =============================================================
 
     def close(self):
+
         p.disconnect()
