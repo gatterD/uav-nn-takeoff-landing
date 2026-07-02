@@ -3,3 +3,6 @@ __pycache__
 flight_data.csv
 flight_analysis_plots
 flight_analysis_report.txt
+requirements.txt
+flight_logs
+models
