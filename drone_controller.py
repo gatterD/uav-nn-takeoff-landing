@@ -1,185 +1,86 @@
+"""Контроллеры формируют action и не изменяют состояние DroneEnv напрямую."""
+
 import numpy as np
 
+from drone_physic import DroneParameters, mix_controls
 from drone_simulation import DroneEnv
-from drone_physic import DroneAerodynamics
 
 
-# =============================================================
-# КОНТРОЛЛЕР ВЫСОТЫ
-# =============================================================
-
-def altitude_controller(target_altitude,
-                        current_altitude,
-                        velocity_z):
-
-    error = target_altitude - current_altitude
-
-    thrust = (
-            0.55
-            + error * 0.18
-            - velocity_z * 0.08
-    )
-
-    return np.clip(thrust, 0.0, 1.0)
+def altitude_controller(target_altitude, current_altitude, velocity_z, integral=0.0):
+    """Простой PID-подобный регулятор высоты, возвращающий нормированную тягу."""
+    error = float(target_altitude) - float(current_altitude)
+    command = 0.41 + 0.22 * error - 0.10 * float(velocity_z) + 0.01 * float(integral)
+    return float(np.clip(command, 0.0, 1.0))
 
 
-# =============================================================
-# СИМУЛЯЦИЯ ПОЛЕТА
-# =============================================================
+def motor_action(total_thrust, roll=0.0, pitch=0.0, yaw=0.0, parameters=None):
+    """Преобразует команды регулятора в четыре нормированные команды моторов."""
+    if parameters is None:
+        parameters = DroneParameters()
+    motors = mix_controls(total_thrust, roll, pitch, yaw, parameters)
+    return {
+        "motors": motors,
+        "motor_1": float(motors[0]), "motor_2": float(motors[1]),
+        "motor_3": float(motors[2]), "motor_4": float(motors[3]),
+        "total_thrust": float(total_thrust),
+    }
+
 
 def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
-    """
-    Запускает симуляцию полета дрона и возвращает генератор данных полета.
-    Включает аэродинамические эффекты и позволяет задавать условия среды.
-    
-    Args:
-        gui: Использовать GUI симуляцию (True/False)
-        env_params: dict с параметрами среды, например:
-            {
-                "wind": (wx, wy, wz),
-                "air_density": 1.225,
-                "turbulence_amplitude": 0.03,
-                "wind_shear_factor": 0.02,
-            }
-        scenario_name: имя сценария, которое будет добавлено к данным
-    
-    Yields:
-        dict: Данные о состоянии дрона и действиях
-    """
-    
+    """Генерирует воспроизводимый takeoff-hover-landing датасет."""
     env = DroneEnv(gui=gui)
-    aerodynamics = DroneAerodynamics()
-
-    if env_params is not None:
+    if env_params:
         env.set_environment(
             wind=env_params.get("wind"),
-            air_density=env_params.get("air_density"),
-            turbulence_amplitude=env_params.get("turbulence_amplitude"),
-            wind_shear_factor=env_params.get("wind_shear_factor"),
+            mass=env_params.get("mass"),
+            max_motor_thrust=env_params.get("max_motor_thrust"),
         )
-
     target_altitude = 5.0
     landing = False
-    
+    integral = 0.0
+
     try:
-        # =====================================================
-        # MAIN LOOP
-        # =====================================================
-        
         for step in range(20000):
-            
-            state = env.get_state()
-            
-            altitude = state["z"]
-            velocity_z = state["vz"]
-            altitude_error = target_altitude - altitude
-            
-            # =================================================
-            # ПОСАДКА
-            # =================================================
-            
+            state_before = env.get_state()
             if step > 10000:
                 landing = True
-                target_altitude = 0.2
-            
-            # =================================================
-            # THROTTLE
-            # =================================================
-            
-            throttle = altitude_controller(
-                target_altitude,
-                altitude,
-                velocity_z
+                target_altitude = 0.0
+            error = target_altitude - state_before["z"]
+            integral = float(np.clip(integral + error * env.TIME_STEP, -5.0, 5.0))
+            throttle = altitude_controller(target_altitude, state_before["z"], state_before["vz"], integral)
+            action = motor_action(
+                throttle * 4.0 * env.parameters.max_motor_thrust,
+                parameters=env.parameters,
             )
-            
-            # =================================================
-            # HIGH-LEVEL ACTION
-            # =================================================
-            
-            action = {
-                "throttle": throttle,
-                "roll": 0.0,
-                "pitch": 0.0,
-                "yaw_rate": 0.0
-            }
-            
-            env.step(action)
-            
-            # =================================================
-            # APPLY AERODYNAMIC EFFECTS
-            # =================================================
-            
-            # Применяем аэродинамические эффекты к состоянию
-            state = aerodynamics.apply_aerodynamic_effects(
-                state,
-                time_step=env.TIME_STEP
-            )
-            
-            # =================================================
-            # YIELD DATA
-            # =================================================
-            
-            phase = "landing" if landing else "takeoff"
-            
-            flight_data = {
+            state = env.step(action)
+            phase = "landing" if landing else ("hover" if abs(error) < 0.1 else "takeoff")
+            yield {
                 "scenario": scenario_name,
                 "time": step * env.TIME_STEP,
                 "phase": phase,
                 "target_altitude": target_altitude,
-                "altitude": altitude,
-                "altitude_error": altitude_error,
-                "vertical_velocity": velocity_z,
-                "throttle": action["throttle"],
-                "x": state["x"],
-                "y": state["y"],
-                "z": state["z"],
-                "roll": state["roll"],
-                "pitch": state["pitch"],
-                "yaw": state["yaw"],
-                "mass": state.get("mass"),
-                "air_speed": state.get("air_speed"),
-                "angle_of_attack": state.get("angle_of_attack"),
-                "sideslip_angle": state.get("sideslip_angle"),
-                "flight_path_angle": state.get("flight_path_angle"),
-                "path_angle": state.get("path_angle"),
-                "roll_angle": state.get("roll_angle"),
-                "thrust": state.get("thrust"),
-                "aero_force_x": state.get("aero_force_x"),
-                "aero_force_y": state.get("aero_force_y"),
-                "aero_force_z": state.get("aero_force_z"),
-                "inertia_x": state.get("inertia_x"),
-                "inertia_y": state.get("inertia_y"),
-                "inertia_z": state.get("inertia_z"),
-                "angular_velocity_x": state.get("angular_velocity_x"),
-                "angular_velocity_y": state.get("angular_velocity_y"),
-                "angular_velocity_z": state.get("angular_velocity_z"),
-                "aero_moment_x": state.get("aero_moment_x"),
-                "aero_moment_y": state.get("aero_moment_y"),
-                "aero_moment_z": state.get("aero_moment_z"),
-                "air_density": state.get("air_density"),
-                "wing_area": state.get("wing_area"),
-                "wind_x": state.get("wind_x"),
-                "wind_y": state.get("wind_y"),
-                "wind_z": state.get("wind_z"),
-                "turbulence": state.get("turbulence"),
-                "wind_shear": state.get("wind_shear"),
-                "ground_effect": state.get("ground_effect"),
+                "altitude": state["z"],
+                "altitude_error": target_altitude - state["z"],
+                "vertical_velocity": state["vz"],
+                "throttle": throttle,
+                "x": state["x"], "y": state["y"], "z": state["z"],
+                "vx": state["vx"], "vy": state["vy"], "vz": state["vz"],
+                "roll": state["roll"], "pitch": state["pitch"], "yaw": state["yaw"],
+                "wx": state["wx"], "wy": state["wy"], "wz": state["wz"],
+                "motor_1": state["motor_1"], "motor_2": state["motor_2"],
+                "motor_3": state["motor_3"], "motor_4": state["motor_4"],
+                "total_thrust": state["total_thrust"], "thrust": state["thrust"],
+                "target_x": 0.0, "target_y": 0.0,
+                "target_z": target_altitude,
+                "target_roll": 0.0, "target_pitch": 0.0, "target_yaw": 0.0,
+                "mass": state["mass"], "wind_x": state["wind_x"],
+                "max_motor_thrust": state["max_motor_thrust"],
+                "wind_y": state["wind_y"], "wind_z": state["wind_z"],
+                "drag_force_x": state["linear_drag_x"],
+                "drag_force_y": state["linear_drag_y"],
+                "drag_force_z": state["linear_drag_z"],
             }
-            
-            yield flight_data
-            
-            # =================================================
-            # SUCCESSFUL LANDING
-            # =================================================
-            
-            if (
-                    landing
-                    and altitude < 0.25
-                    and abs(velocity_z) < 0.15
-            ):
-                
-                print("Посадка завершена")
+            if landing and state["z"] <= 0.02 and abs(state["vz"]) < 0.15:
                 break
-    
     finally:
         env.close()

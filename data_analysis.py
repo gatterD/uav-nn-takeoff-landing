@@ -25,6 +25,10 @@ REQUIRED_COLUMNS = [
     'roll',
     'pitch',
     'yaw',
+    'motor_1',
+    'motor_2',
+    'motor_3',
+    'motor_4',
 ]
 
 

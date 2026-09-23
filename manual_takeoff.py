@@ -11,16 +11,14 @@ import argparse
 import time
 
 from drone_controller import altitude_controller
-from drone_physic import DroneAerodynamics
 from drone_simulation import DroneEnv
 
 
 def choose_wind_speed():
     """Возвращает выбранную скорость ветра в метрах в секунду."""
-    physics = DroneAerodynamics()
-    default_speed = physics.wind_effect_x
+    default_speed = 0.0
     print("\nВыберите скорость ветра из физической модели.")
-    print(f"Текущее значение wind_effect_x: {default_speed:.1f} м/с")
+    print(f"Текущее значение wind_x: {default_speed:.1f} м/с")
     while True:
         value = input("Скорость ветра, м/с (Enter = 0): ").strip()
         if not value:
@@ -51,14 +49,8 @@ def choose_slowdown():
 
 def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
     """Показывает полный цикл полета без создания файлов с результатами."""
-    physics = DroneAerodynamics()
-    physics.set_wind(wind_x=wind_speed)
     env = DroneEnv(gui=gui)
-    env.set_wind(
-        wind_x=physics.wind_effect_x,
-        wind_y=physics.wind_effect_y,
-        wind_z=physics.wind_effect_z,
-    )
+    env.set_wind(wind_x=wind_speed)
     delay = env.TIME_STEP * slowdown
     target_altitude = 5.0
     phase = "takeoff"

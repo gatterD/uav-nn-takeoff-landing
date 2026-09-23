@@ -171,6 +171,27 @@ def analyze_altitude_tracking(df):
     }
 
 
+def analyze_flight_metrics(df):
+    """Возвращает дополнительные критерии качества взлета и посадки."""
+    numeric = df.copy()
+    for column in ["x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz"]:
+        if column in numeric:
+            numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
+    horizontal_error = np.sqrt(numeric["x"] ** 2 + numeric["y"] ** 2) if {"x", "y"} <= set(numeric) else pd.Series(dtype=float)
+    tilt = np.sqrt(numeric["roll"] ** 2 + numeric["pitch"] ** 2) if {"roll", "pitch"} <= set(numeric) else pd.Series(dtype=float)
+    angular_speed = np.sqrt(numeric["wx"] ** 2 + numeric["wy"] ** 2 + numeric["wz"] ** 2) if {"wx", "wy", "wz"} <= set(numeric) else pd.Series(dtype=float)
+    touchdown = numeric.iloc[-1] if len(numeric) else pd.Series(dtype=float)
+    return {
+        "landing_position_error": float(horizontal_error.iloc[-1]) if len(horizontal_error) else 0.0,
+        "landing_vertical_speed": float(abs(touchdown.get("vz", 0.0))),
+        "max_tilt": float(tilt.abs().max()) if len(tilt) else 0.0,
+        "max_angular_speed": float(angular_speed.abs().max()) if len(angular_speed) else 0.0,
+        "trajectory_deviation": float(horizontal_error.max()) if len(horizontal_error) else 0.0,
+        "takeoff_success": bool(numeric["z"].max() >= numeric.get("target_altitude", pd.Series([0.0])).max() - 0.1) if "z" in numeric else False,
+        "landing_success": bool(touchdown.get("z", 1.0) <= 0.05 and abs(touchdown.get("vz", 1.0)) <= 0.3),
+    }
+
+
 # =============================================================
 # ВИЗУАЛИЗАЦИЯ
 # =============================================================
@@ -269,6 +290,7 @@ def summarize_run(df, scenario_name):
     phases = analyze_phases(df)
     stability = analyze_stability(df)
     tracking = analyze_altitude_tracking(df)
+    flight_metrics = analyze_flight_metrics(df)
     env_name, difficulty = _scenario_info(scenario_name)
 
     summary = {
@@ -279,6 +301,7 @@ def summarize_run(df, scenario_name):
         "phases": phases,
         "stability": stability,
         "tracking": tracking,
+        "flight_metrics": flight_metrics,
     }
     return summary
 
@@ -321,6 +344,7 @@ def generate_flight_report(csv_path="flight_data.xlsx", save_path="flight_analys
         phases = summary["phases"]
         stability = summary["stability"]
         tracking = summary["tracking"]
+        flight_metrics = summary["flight_metrics"]
         env_name, difficulty = summary["environment"], summary["difficulty"]
 
         report_lines.append(f"=== СЦЕНАРИЙ: {scenario_name} ===")
@@ -334,6 +358,12 @@ def generate_flight_report(csv_path="flight_data.xlsx", save_path="flight_analys
         report_lines.append(f"Средняя ошибка высоты: {tracking['mae']:.3f} м")
         report_lines.append(f"RMSE: {tracking['rmse']:.3f} м")
         report_lines.append(f"Макс. ошибка: {tracking['max_error']:.3f} м")
+        report_lines.append(f"Ошибка координаты посадки: {flight_metrics['landing_position_error']:.3f} м")
+        report_lines.append(f"Вертикальная скорость при посадке: {flight_metrics['landing_vertical_speed']:.3f} м/с")
+        report_lines.append(f"Максимальный наклон: {np.degrees(flight_metrics['max_tilt']):.3f} град")
+        report_lines.append(f"Максимальная угловая скорость: {flight_metrics['max_angular_speed']:.3f} рад/с")
+        report_lines.append(f"Успешный взлет: {flight_metrics['takeoff_success']}")
+        report_lines.append(f"Успешная посадка: {flight_metrics['landing_success']}")
         report_lines.append(f"Время в пределах ±0.5 м: {tracking['error_within_0_5m']:.2f}%")
         report_lines.append(f"Время в пределах ±0.1 м: {tracking['error_within_0_1m']:.2f}%")
         report_lines.append(f"Макс. вертикальная скорость: {stats['max_velocity']:.3f} м/с")

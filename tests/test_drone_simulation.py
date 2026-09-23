@@ -1,80 +1,57 @@
 import unittest
 
+import numpy as np
+
+from drone_physic import DroneParameters, DroneState, compute_forces_and_moments
 from drone_simulation import DroneEnv
 
 
 class DroneSimulationTests(unittest.TestCase):
-    def test_simple_takeoff_and_landing_state(self):
+    def test_motor_action_changes_attitude_through_moment(self):
         env = DroneEnv(gui=False)
-
         initial = env.get_state()
-        self.assertGreaterEqual(initial["z"], 0.0)
-        self.assertEqual(initial["vx"], 0.0)
-        self.assertEqual(initial["vy"], 0.0)
-        self.assertEqual(initial["vz"], 0.0)
-
-        takeoff_action = {
-            "throttle": 0.8,
-            "roll": 0.0,
-            "pitch": 0.0,
-            "yaw_rate": 0.0,
-        }
-        after_takeoff = env.step(takeoff_action)
-        self.assertGreater(after_takeoff["z"], initial["z"])
-
-        landing_action = {
-            "throttle": 0.2,
-            "roll": 0.0,
-            "pitch": 0.0,
-            "yaw_rate": 0.0,
-        }
-        after_landing = env.step(landing_action)
-        self.assertLessEqual(after_landing["z"], after_takeoff["z"] + 1e-4)
-
+        state = env.step({"motors": [1.0, 0.0, 0.0, 0.0]})
+        self.assertGreater(abs(state["wx"]), 0.0)
+        self.assertNotEqual(state["roll"], initial["roll"])
         env.close()
 
-    def test_physical_state_includes_aerodynamic_parameters(self):
+    def test_legacy_throttle_maps_to_four_equal_motors(self):
+        env = DroneEnv(gui=False)
+        state = env.step({"throttle": 0.8, "roll": 0.0, "pitch": 0.0, "yaw_rate": 0.0})
+        self.assertEqual(state["motor_1"], 0.8)
+        self.assertEqual(state["motor_4"], 0.8)
+        self.assertGreater(state["z"], 0.15)
+        env.close()
+
+    def test_rotated_body_thrust_has_horizontal_component(self):
+        parameters = DroneParameters()
+        env = DroneEnv(gui=False)
+        state = env.state
+        state.orientation = np.array([0.2, 0.0, 0.0])
+        forces = compute_forces_and_moments(state, [0.5] * 4, parameters)
+        self.assertGreater(abs(forces["thrust_force"][1]), 1e-6)
+        env.close()
+
+    def test_angular_damping_opposes_angular_velocity(self):
+        parameters = DroneParameters()
+        env = DroneEnv(gui=False)
+        env.state.angular_velocity = np.array([1.0, -2.0, 0.5])
+        forces = compute_forces_and_moments(env.state, [0.0] * 4, parameters)
+        self.assertTrue(np.all(forces["damping_moment"] * env.state.angular_velocity <= 0.0))
+        env.close()
+
+    def test_state_contains_learning_and_environment_fields(self):
         env = DroneEnv(gui=False)
         state = env.get_state()
-
         expected_fields = [
-            "mass",
-            "air_speed",
-            "angle_of_attack",
-            "sideslip_angle",
-            "flight_path_angle",
-            "path_angle",
-            "roll_angle",
-            "thrust",
-            "aero_force_x",
-            "aero_force_y",
-            "aero_force_z",
-            "inertia_x",
-            "inertia_y",
-            "inertia_z",
-            "angular_velocity_x",
-            "angular_velocity_y",
-            "angular_velocity_z",
-            "aero_moment_x",
-            "aero_moment_y",
-            "aero_moment_z",
-            "air_density",
-            "wing_area",
-            "wind_x",
-            "wind_y",
-            "wind_z",
-            "turbulence",
-            "wind_shear",
-            "ground_effect",
+            "x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz",
+            "motor_1", "motor_2", "motor_3", "motor_4", "total_thrust", "mass",
+            "wind_x", "wind_y", "wind_z",
         ]
-
         for field in expected_fields:
             self.assertIn(field, state)
-
-        self.assertGreaterEqual(state["air_density"], 0.0)
-        self.assertGreater(state["wing_area"], 0.0)
-        self.assertGreaterEqual(state["mass"], 0.0)
-
+        self.assertNotIn("ground_effect", state)
+        self.assertNotIn("wing_area", state)
         env.close()
 
 

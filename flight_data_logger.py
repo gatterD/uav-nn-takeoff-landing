@@ -11,21 +11,18 @@ EXCEL_PATH = "flight_data.xlsx"
 BASE_ENVIRONMENTS = {
     "calm_wind": {
         "wind_speed": (0.0, 0.5),
-        "air_density": (1.20, 1.25),
-        "turbulence": (0.005, 0.02),
-        "wind_shear": (0.005, 0.015),
+        "mass": (0.95, 1.05),
+        "max_motor_thrust": (5.8, 6.2),
     },
     "moderate_wind": {
         "wind_speed": (0.5, 2.0),
-        "air_density": (1.15, 1.22),
-        "turbulence": (0.02, 0.08),
-        "wind_shear": (0.015, 0.05),
+        "mass": (0.9, 1.1),
+        "max_motor_thrust": (5.5, 6.5),
     },
     "strong_wind": {
         "wind_speed": (2.0, 5.0),
-        "air_density": (1.05, 1.18),
-        "turbulence": (0.06, 0.18),
-        "wind_shear": (0.04, 0.12),
+        "mass": (0.85, 1.15),
+        "max_motor_thrust": (5.2, 6.8),
     },
 }
 
@@ -53,9 +50,8 @@ def generate_random_scenarios(rng=None):
     for environment_name, environment in BASE_ENVIRONMENTS.items():
         for difficulty_name, factor in DIFFICULTY_LEVELS.items():
             wind_low, wind_high = _scaled_range(environment["wind_speed"], factor)
-            density_range = _scaled_range(environment["air_density"], factor)
-            turbulence_range = _scaled_range(environment["turbulence"], factor)
-            shear_range = _scaled_range(environment["wind_shear"], factor)
+            mass_range = _scaled_range(environment["mass"], factor, center=1.0)
+            thrust_range = _scaled_range(environment["max_motor_thrust"], factor, center=6.0)
 
             speed = rng.uniform(wind_low, wind_high)
             direction = rng.uniform(0.0, 2.0 * math.pi)
@@ -65,9 +61,8 @@ def generate_random_scenarios(rng=None):
                     speed * math.sin(direction),
                     rng.uniform(-0.15, 0.15) * factor,
                 ),
-                "air_density": rng.uniform(*density_range),
-                "turbulence_amplitude": rng.uniform(*turbulence_range),
-                "wind_shear_factor": rng.uniform(*shear_range),
+                "mass": rng.uniform(*mass_range),
+                "max_motor_thrust": rng.uniform(*thrust_range),
             }
 
     return scenarios
@@ -85,39 +80,19 @@ def save_flight_data_to_csv(flight_data_generator, output_path=SAVE_PATH):
         flight_data_generator: Генератор данных полета из drone_controller
         output_path: Путь к выходному CSV файлу
     """
+    records = list(flight_data_generator)
+    fieldnames = [
+        "time", "phase", "target_altitude", "altitude", "altitude_error", "vertical_velocity",
+        "x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz",
+        "target_x", "target_y", "target_z", "target_roll", "target_pitch", "target_yaw",
+        "motor_1", "motor_2", "motor_3", "motor_4", "total_thrust", "mass", "max_motor_thrust",
+        "wind_x", "wind_y", "wind_z", "throttle",
+    ]
     with open(output_path, mode="w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "time",
-            "phase",
-            "target_altitude",
-            "altitude",
-            "altitude_error",
-            "vertical_velocity",
-            "throttle",
-            "x",
-            "y",
-            "z",
-            "roll",
-            "pitch",
-            "yaw",
-        ])
-        for flight_data in flight_data_generator:
-            writer.writerow([
-                flight_data["time"],
-                flight_data["phase"],
-                flight_data["target_altitude"],
-                flight_data["altitude"],
-                flight_data["altitude_error"],
-                flight_data["vertical_velocity"],
-                flight_data["throttle"],
-                flight_data["x"],
-                flight_data["y"],
-                flight_data["z"],
-                flight_data["roll"],
-                flight_data["pitch"],
-                flight_data["yaw"],
-            ])
+        writer.writerow(fieldnames)
+        for flight_data in records:
+            writer.writerow([flight_data.get(field) for field in fieldnames])
     print(f"Данные сохранены в {output_path}")
 
 
