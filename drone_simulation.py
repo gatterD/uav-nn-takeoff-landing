@@ -73,10 +73,13 @@ class DroneEnv:
             p.resetDebugVisualizerCamera(4.0, 45, -30, [0, 0, 1.5])
 
     def _create_drone(self):
-        collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.12, 0.08, 0.04])
+        collision_shape = p.createCollisionShape(
+            p.GEOM_BOX,
+            halfExtents=[0.12, 0.08, self.parameters.ground_clearance],
+        )
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
-            halfExtents=[0.12, 0.08, 0.04],
+            halfExtents=[0.12, 0.08, self.parameters.ground_clearance],
             rgbaColor=[0.0, 1.0, 0.0, 1.0],
         )
         self.drone_id = p.createMultiBody(

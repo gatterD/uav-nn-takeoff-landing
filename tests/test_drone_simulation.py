@@ -1,8 +1,17 @@
 import unittest
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
-from drone_physic import DroneParameters, DroneState, compute_forces_and_moments
+from drone_physic import (
+    DroneParameters,
+    DroneState,
+    compute_forces_and_moments,
+    integrate_state,
+    mix_controls,
+    motor_forces_and_moments,
+    rotation_matrix,
+)
 from drone_simulation import DroneEnv
 
 
@@ -39,6 +48,54 @@ class DroneSimulationTests(unittest.TestCase):
         forces = compute_forces_and_moments(env.state, [0.0] * 4, parameters)
         self.assertTrue(np.all(forces["damping_moment"] * env.state.angular_velocity <= 0.0))
         env.close()
+
+    def test_body_rates_update_orientation_as_composed_rotations(self):
+        parameters = DroneParameters()
+        state = DroneState(
+            position=np.array([0.0, 0.0, 1.0]),
+            velocity=np.zeros(3),
+            orientation=np.array([0.3, -0.25, 0.4]),
+            angular_velocity=np.array([0.8, -0.4, 0.6]),
+        )
+
+        next_state, _ = integrate_state(state, [0.5] * 4, parameters)
+        expected = (
+            Rotation.from_euler("xyz", state.orientation)
+            * Rotation.from_rotvec(next_state.angular_velocity * parameters.time_step)
+        )
+
+        np.testing.assert_allclose(
+            Rotation.from_euler("xyz", state.orientation).as_matrix(),
+            rotation_matrix(*state.orientation),
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            Rotation.from_euler("xyz", next_state.orientation).as_matrix(),
+            expected.as_matrix(),
+            atol=1e-12,
+        )
+
+    def test_control_mixer_matches_motor_moment_convention(self):
+        parameters = DroneParameters()
+        expected_moments = np.array([0.1, 0.12, 0.04])
+        motors = mix_controls(12.0, *expected_moments, parameters)
+        actual_moments = motor_forces_and_moments(motors, parameters)[2]
+
+        np.testing.assert_allclose(actual_moments, expected_moments, atol=1e-12)
+
+    def test_integrator_resolves_ground_contact_without_pybullet(self):
+        parameters = DroneParameters()
+        state = DroneState(
+            position=np.array([0.0, 0.0, 0.01]),
+            velocity=np.array([0.0, 0.0, -1.0]),
+            orientation=np.zeros(3),
+            angular_velocity=np.zeros(3),
+        )
+
+        next_state, _ = integrate_state(state, [0.0] * 4, parameters)
+
+        self.assertEqual(next_state.position[2], parameters.ground_clearance)
+        self.assertEqual(next_state.velocity[2], 0.0)
 
     def test_state_contains_learning_and_environment_fields(self):
         env = DroneEnv(gui=False)

@@ -80,7 +80,8 @@ def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
                 "drag_force_y": state["linear_drag_y"],
                 "drag_force_z": state["linear_drag_z"],
             }
-            if landing and state["z"] <= 0.02 and abs(state["vz"]) < 0.15:
+            if (landing and state["z"] <= env.parameters.ground_clearance + 0.02
+                    and abs(state["vz"]) < 0.15):
                 break
     finally:
         env.close()

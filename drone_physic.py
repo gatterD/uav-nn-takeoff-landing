@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class DroneParameters:
     time_step: float = 1.0 / 240.0
     linear_drag_coefficient: float = 0.08
     angular_drag_coefficient: float = 0.04
+    ground_clearance: float = 0.04
 
     @property
     def inertia(self):
@@ -107,12 +109,12 @@ def integrate_state(state, motors, parameters, wind=None):
     new_velocity = state.velocity + acceleration * dt
     new_position = state.position + new_velocity * dt
     new_angular_velocity = state.angular_velocity + angular_acceleration * dt
-    new_orientation = state.orientation + new_angular_velocity * dt
-    new_orientation[0:2] = (new_orientation[0:2] + np.pi) % (2.0 * np.pi) - np.pi
-    new_orientation[2] = (new_orientation[2] + np.pi) % (2.0 * np.pi) - np.pi
+    orientation = Rotation.from_euler("xyz", state.orientation)
+    body_rotation = Rotation.from_rotvec(new_angular_velocity * dt)
+    new_orientation = (orientation * body_rotation).as_euler("xyz")
 
-    if new_position[2] < 0.0:
-        new_position[2] = 0.0
+    if new_position[2] < parameters.ground_clearance:
+        new_position[2] = parameters.ground_clearance
         if new_velocity[2] < 0.0:
             new_velocity[2] = 0.0
 
@@ -122,9 +124,9 @@ def integrate_state(state, motors, parameters, wind=None):
 def mix_controls(total_thrust, roll, pitch, yaw, parameters):
     """Смешивает команды тяги и моментов в четыре команды моторов."""
     hover = float(total_thrust) / (4.0 * parameters.max_motor_thrust)
-    roll_term = float(roll) * parameters.arm_length / (4.0 * parameters.max_motor_thrust)
-    pitch_term = float(pitch) * parameters.arm_length / (4.0 * parameters.max_motor_thrust)
-    yaw_term = float(yaw) * parameters.motor_torque_coefficient / (4.0 * parameters.max_motor_thrust)
+    roll_term = float(roll) / (4.0 * parameters.arm_length * parameters.max_motor_thrust)
+    pitch_term = float(pitch) / (4.0 * parameters.arm_length * parameters.max_motor_thrust)
+    yaw_term = float(yaw) / (4.0 * parameters.motor_torque_coefficient * parameters.max_motor_thrust)
     return clamp_motors([
         hover + roll_term - pitch_term + yaw_term,
         hover - roll_term - pitch_term - yaw_term,
