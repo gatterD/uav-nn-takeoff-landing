@@ -1,10 +1,10 @@
-"""Интерактивный запуск дрона без сохранения данных полета.
+"""Запуск демонстрационного полета без сохранения данных.
 
 Запуск:
     python manual_takeoff.py
 
-Пользователь выбирает скорость ветра. После этого выполняется один
-полный сценарий: взлет, зависание и посадка.
+Пользователь выбирает скорость ветра и темп показа. Высота управляется
+автоматически общей тягой; управление креном, тангажом и рысканием не реализовано.
 """
 
 import argparse
@@ -48,7 +48,7 @@ def choose_slowdown():
 
 
 def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
-    """Показывает полный цикл полета без создания файлов с результатами."""
+    """Показывает автоматический цикл высоты без осевого управления."""
     env = DroneEnv(gui=gui)
     env.set_wind(wind_x=wind_speed)
     delay = env.TIME_STEP * slowdown
@@ -61,7 +61,11 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
         for step in range(20000):
             state = env.get_state()
 
-            if phase == "takeoff" and state["z"] >= 4.95:
+            if (
+                phase == "takeoff"
+                and state["z"] >= 4.95
+                and abs(state["vz"]) < 0.15
+            ):
                 phase = "hover"
                 target_altitude = 5.0
             elif phase == "hover":
@@ -76,9 +80,6 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
                     state["z"],
                     state["vz"],
                 ),
-                "roll": 0.0,
-                "pitch": 0.0,
-                "yaw_rate": 0.0,
             }
 
             state = env.step(action)
@@ -87,16 +88,29 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
                     f"t={step * env.TIME_STEP:5.1f} с | "
                     f"этап={phase} | высота={state['z']:.2f} м"
                 )
-            if phase == "landing" and state["z"] <= 0.35 and abs(state["vz"]) < 0.15:
+
+            horizontal_speed = (state["vx"] ** 2 + state["vy"] ** 2) ** 0.5
+            angular_speed = (state["wx"] ** 2 + state["wy"] ** 2 + state["wz"] ** 2) ** 0.5
+            if (
+                phase == "landing"
+                and state["z"] <= env.parameters.ground_clearance + 0.02
+                and abs(state["vz"]) < 0.15
+                and horizontal_speed < 0.1
+                and angular_speed < 0.1
+            ):
                 print("Посадка завершена")
                 break
             time.sleep(delay)
+        else:
+            print("Сценарий не завершен: достигнут лимит шагов")
     finally:
         env.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Просмотр полного полета дрона")
+    parser = argparse.ArgumentParser(
+        description="Демонстрационный полет с автоматическим управлением высотой"
+    )
     parser.add_argument("--wind-speed", type=float, default=None)
     parser.add_argument("--slowdown", type=float, choices=(1, 2, 4, 8, 16), default=None)
     args = parser.parse_args()

@@ -7,12 +7,19 @@ from drone_physic import (
     DroneParameters,
     DroneState,
     compute_forces_and_moments,
+    ground_contact_height,
     integrate_state,
     mix_controls,
     motor_forces_and_moments,
     rotation_matrix,
 )
 from drone_simulation import DroneEnv
+from drone_controller import run_flight_simulation
+from flight_data_logger import (
+    BASELINE_SCENARIO,
+    generate_random_scenarios,
+    validate_scenario_records,
+)
 
 
 class DroneSimulationTests(unittest.TestCase):
@@ -26,11 +33,36 @@ class DroneSimulationTests(unittest.TestCase):
 
     def test_legacy_throttle_maps_to_four_equal_motors(self):
         env = DroneEnv(gui=False)
-        state = env.step({"throttle": 0.8, "roll": 0.0, "pitch": 0.0, "yaw_rate": 0.0})
+        state = env.step({"throttle": 0.8})
         self.assertEqual(state["motor_1"], 0.8)
         self.assertEqual(state["motor_4"], 0.8)
         self.assertGreater(state["z"], 0.15)
         env.close()
+
+    def test_attitude_commands_are_rejected_instead_of_ignored(self):
+        env = DroneEnv(gui=False)
+        try:
+            with self.assertRaisesRegex(ValueError, "Attitude controls are not supported"):
+                env.step({"throttle": 0.5, "roll": 0.0})
+        finally:
+            env.close()
+
+    def test_seeded_scenarios_repeat_and_baseline_flight_validates(self):
+        self.assertEqual(
+            generate_random_scenarios(seed=42),
+            generate_random_scenarios(seed=42),
+        )
+
+        records = list(run_flight_simulation(
+            gui=False,
+            env_params=BASELINE_SCENARIO,
+            scenario_name="baseline_test",
+            target_altitude=1.0,
+            hover_duration=0.1,
+        ))
+
+        validate_scenario_records(records, target_altitude=1.0)
+        self.assertEqual(records[-1]["phase"], "landing")
 
     def test_rotated_body_thrust_has_horizontal_component(self):
         parameters = DroneParameters()
@@ -96,6 +128,27 @@ class DroneSimulationTests(unittest.TestCase):
 
         self.assertEqual(next_state.position[2], parameters.ground_clearance)
         self.assertEqual(next_state.velocity[2], 0.0)
+
+    def test_ground_contact_supports_body_and_damps_landing_motion(self):
+        parameters = DroneParameters()
+        state = DroneState(
+            position=np.array([0.0, 0.0, parameters.ground_clearance]),
+            velocity=np.array([1.0, 0.0, 0.0]),
+            orientation=np.array([0.2, 0.1, 0.0]),
+            angular_velocity=np.array([0.5, -0.3, 1.0]),
+        )
+
+        next_state, _ = integrate_state(state, [0.0] * 4, parameters)
+
+        self.assertAlmostEqual(
+            next_state.position[2],
+            ground_contact_height(next_state.orientation, parameters),
+        )
+        self.assertLess(next_state.velocity[0], state.velocity[0])
+        self.assertLess(
+            np.linalg.norm(next_state.angular_velocity),
+            np.linalg.norm(state.angular_velocity),
+        )
 
     def test_state_contains_learning_and_environment_fields(self):
         env = DroneEnv(gui=False)

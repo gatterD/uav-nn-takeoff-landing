@@ -3,9 +3,15 @@ import math
 import random
 import pandas as pd
 from drone_controller import run_flight_simulation
+from drone_physic import DroneParameters
 
 SAVE_PATH = "flight_data.csv"
 EXCEL_PATH = "flight_data.xlsx"
+BASELINE_SCENARIO = {
+    "wind": (0.0, 0.0, 0.0),
+    "mass": 1.0,
+    "max_motor_thrust": 6.0,
+}
 
 
 BASE_ENVIRONMENTS = {
@@ -42,9 +48,9 @@ def _scaled_range(value_range, factor, center=None):
     return max(0.0, center - half_width), center + half_width
 
 
-def generate_random_scenarios(rng=None):
-    """Создаёт 9 случайных сценариев: 3 среды и 3 уровня сложности."""
-    rng = rng or random.Random()
+def generate_random_scenarios(rng=None, seed=0):
+    """Создаёт повторяемые сценарии при заданном seed или RNG."""
+    rng = rng if rng is not None else random.Random(seed)
     scenarios = {}
 
     for environment_name, environment in BASE_ENVIRONMENTS.items():
@@ -66,6 +72,42 @@ def generate_random_scenarios(rng=None):
             }
 
     return scenarios
+
+
+def validate_scenario_records(records, target_altitude=5.0):
+    """Отклоняет сценарий, если он не выполнил взлет, зависание и посадку."""
+    if not records:
+        raise ValueError("Scenario produced no flight records")
+
+    required_phases = {"takeoff", "hover", "landing"}
+    phases = {record["phase"] for record in records}
+    if not required_phases.issubset(phases):
+        missing = ", ".join(sorted(required_phases - phases))
+        raise ValueError(f"Scenario did not reach required phases: {missing}")
+
+    numeric_fields = (
+        "x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz"
+    )
+    if any(
+        not math.isfinite(float(record[field]))
+        for record in records
+        for field in numeric_fields
+    ):
+        raise ValueError("Scenario contains non-finite state values")
+
+    if max(record["z"] for record in records) < target_altitude - 0.1:
+        raise ValueError("Scenario did not reach the target altitude")
+
+    final = records[-1]
+    horizontal_speed = math.hypot(final["vx"], final["vy"])
+    angular_speed = math.sqrt(final["wx"] ** 2 + final["wy"] ** 2 + final["wz"] ** 2)
+    if (
+        final["z"] > DroneParameters().ground_clearance + 0.02
+        or abs(final["vz"]) >= 0.15
+        or horizontal_speed >= 0.1
+        or angular_speed >= 0.1
+    ):
+        raise ValueError("Scenario did not finish in a stable ground contact")
 
 
 # =============================================================
@@ -119,6 +161,7 @@ def run_scenarios_and_save_excel(scenarios, gui=False, output_path=EXCEL_PATH):
         records = []
         for flight_data in run_flight_simulation(gui=gui, env_params=env_params, scenario_name=scenario_name):
             records.append(flight_data)
+        validate_scenario_records(records)
         scenario_results[scenario_name] = records
 
     save_flight_data_to_excel(scenario_results, output_path=output_path)
@@ -130,5 +173,5 @@ def run_scenarios_and_save_excel(scenarios, gui=False, output_path=EXCEL_PATH):
 # =============================================================
 
 if __name__ == "__main__":
-    scenarios = generate_random_scenarios()
+    scenarios = {"baseline": BASELINE_SCENARIO.copy()}
     run_scenarios_and_save_excel(scenarios, gui=False, output_path=EXCEL_PATH)

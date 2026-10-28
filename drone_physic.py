@@ -23,6 +23,10 @@ class DroneParameters:
     linear_drag_coefficient: float = 0.08
     angular_drag_coefficient: float = 0.04
     ground_clearance: float = 0.04
+    body_half_length: float = 0.12
+    body_half_width: float = 0.08
+    ground_friction_coefficient: float = 0.7
+    ground_angular_damping: float = 8.0
 
     @property
     def inertia(self):
@@ -51,6 +55,17 @@ def rotation_matrix(roll, pitch, yaw):
         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
         [-sp, cp * sr, cp * cr],
     ])
+
+
+def ground_contact_height(orientation, parameters):
+    """Высота центра для опоры ориентированного прямоугольного корпуса."""
+    world_up_in_body_axes = rotation_matrix(*orientation)[2]
+    half_extents = np.array([
+        parameters.body_half_length,
+        parameters.body_half_width,
+        parameters.ground_clearance,
+    ])
+    return float(np.dot(np.abs(world_up_in_body_axes), half_extents))
 
 
 def clamp_motors(motors):
@@ -113,10 +128,20 @@ def integrate_state(state, motors, parameters, wind=None):
     body_rotation = Rotation.from_rotvec(new_angular_velocity * dt)
     new_orientation = (orientation * body_rotation).as_euler("xyz")
 
-    if new_position[2] < parameters.ground_clearance:
-        new_position[2] = parameters.ground_clearance
+    contact_height = ground_contact_height(new_orientation, parameters)
+    if new_position[2] <= contact_height:
+        impact_speed = max(0.0, -new_velocity[2])
+        new_position[2] = contact_height
         if new_velocity[2] < 0.0:
             new_velocity[2] = 0.0
+
+        horizontal_speed = np.linalg.norm(new_velocity[:2])
+        friction_delta = parameters.ground_friction_coefficient * (
+            parameters.gravity * dt + impact_speed
+        )
+        if horizontal_speed > 0.0:
+            new_velocity[:2] *= max(0.0, 1.0 - friction_delta / horizontal_speed)
+        new_angular_velocity *= np.exp(-parameters.ground_angular_damping * dt)
 
     return DroneState(new_position, new_velocity, new_orientation, new_angular_velocity), forces
 

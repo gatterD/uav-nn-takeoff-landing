@@ -26,8 +26,15 @@ def motor_action(total_thrust, roll=0.0, pitch=0.0, yaw=0.0, parameters=None):
     }
 
 
-def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
-    """Генерирует воспроизводимый takeoff-hover-landing датасет."""
+def run_flight_simulation(
+    gui=True,
+    env_params=None,
+    scenario_name="default",
+    target_altitude=5.0,
+    hover_duration=2.0,
+    max_steps=20000,
+):
+    """Генерирует takeoff-hover-landing датасет по условиям состояния."""
     env = DroneEnv(gui=gui)
     if env_params:
         env.set_environment(
@@ -35,32 +42,45 @@ def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
             mass=env_params.get("mass"),
             max_motor_thrust=env_params.get("max_motor_thrust"),
         )
-    target_altitude = 5.0
-    landing = False
+    target_altitude = float(target_altitude)
+    phase = "takeoff"
+    hover_steps = max(1, round(float(hover_duration) / env.TIME_STEP))
+    hover_counter = 0
     integral = 0.0
 
     try:
-        for step in range(20000):
+        for step in range(max_steps):
             state_before = env.get_state()
-            if step > 10000:
-                landing = True
-                target_altitude = 0.0
-            error = target_altitude - state_before["z"]
+            if (phase == "takeoff"
+                    and state_before["z"] >= target_altitude - 0.05
+                    and abs(state_before["vz"]) < 0.15):
+                phase = "hover"
+            elif phase == "hover":
+                hover_counter += 1
+                if hover_counter >= hover_steps:
+                    phase = "landing"
+
+            current_target = 0.0 if phase == "landing" else target_altitude
+            error = current_target - state_before["z"]
             integral = float(np.clip(integral + error * env.TIME_STEP, -5.0, 5.0))
-            throttle = altitude_controller(target_altitude, state_before["z"], state_before["vz"], integral)
+            throttle = altitude_controller(
+                current_target,
+                state_before["z"],
+                state_before["vz"],
+                integral,
+            )
             action = motor_action(
                 throttle * 4.0 * env.parameters.max_motor_thrust,
                 parameters=env.parameters,
             )
             state = env.step(action)
-            phase = "landing" if landing else ("hover" if abs(error) < 0.1 else "takeoff")
             yield {
                 "scenario": scenario_name,
                 "time": step * env.TIME_STEP,
                 "phase": phase,
-                "target_altitude": target_altitude,
+                "target_altitude": current_target,
                 "altitude": state["z"],
-                "altitude_error": target_altitude - state["z"],
+                "altitude_error": current_target - state["z"],
                 "vertical_velocity": state["vz"],
                 "throttle": throttle,
                 "x": state["x"], "y": state["y"], "z": state["z"],
@@ -71,7 +91,7 @@ def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
                 "motor_3": state["motor_3"], "motor_4": state["motor_4"],
                 "total_thrust": state["total_thrust"], "thrust": state["thrust"],
                 "target_x": 0.0, "target_y": 0.0,
-                "target_z": target_altitude,
+                "target_z": current_target,
                 "target_roll": 0.0, "target_pitch": 0.0, "target_yaw": 0.0,
                 "mass": state["mass"], "wind_x": state["wind_x"],
                 "max_motor_thrust": state["max_motor_thrust"],
@@ -80,8 +100,15 @@ def run_flight_simulation(gui=True, env_params=None, scenario_name="default"):
                 "drag_force_y": state["linear_drag_y"],
                 "drag_force_z": state["linear_drag_z"],
             }
-            if (landing and state["z"] <= env.parameters.ground_clearance + 0.02
-                    and abs(state["vz"]) < 0.15):
+            horizontal_speed = np.hypot(state["vx"], state["vy"])
+            angular_speed = np.linalg.norm([state["wx"], state["wy"], state["wz"]])
+            if (
+                phase == "landing"
+                and state["z"] <= env.parameters.ground_clearance + 0.02
+                and abs(state["vz"]) < 0.15
+                and horizontal_speed < 0.1
+                and angular_speed < 0.1
+            ):
                 break
     finally:
         env.close()

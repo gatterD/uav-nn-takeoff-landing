@@ -75,11 +75,19 @@ class DroneEnv:
     def _create_drone(self):
         collision_shape = p.createCollisionShape(
             p.GEOM_BOX,
-            halfExtents=[0.12, 0.08, self.parameters.ground_clearance],
+            halfExtents=[
+                self.parameters.body_half_length,
+                self.parameters.body_half_width,
+                self.parameters.ground_clearance,
+            ],
         )
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
-            halfExtents=[0.12, 0.08, self.parameters.ground_clearance],
+            halfExtents=[
+                self.parameters.body_half_length,
+                self.parameters.body_half_width,
+                self.parameters.ground_clearance,
+            ],
             rgbaColor=[0.0, 1.0, 0.0, 1.0],
         )
         self.drone_id = p.createMultiBody(
@@ -100,6 +108,10 @@ class DroneEnv:
         )
 
     def _action_to_motors(self, action):
+        unsupported_controls = {"roll", "pitch", "yaw", "yaw_rate"}.intersection(action)
+        if unsupported_controls:
+            controls = ", ".join(sorted(unsupported_controls))
+            raise ValueError(f"Attitude controls are not supported; provide motor commands instead: {controls}")
         if "motors" in action:
             return np.asarray(action["motors"], dtype=float).reshape(4)
         motor_keys = ["motor_1", "motor_2", "motor_3", "motor_4"]
@@ -140,6 +152,7 @@ class DroneEnv:
         return np.full(4, np.clip(float(throttle), 0.0, 1.0))
 
     def step(self, action):
+        """Advances one step using four motor commands or a shared throttle."""
         self.motor_commands = np.clip(self._action_to_motors(action), 0.0, 1.0)
         self.state, self.last_forces = integrate_state(
             self.state, self.motor_commands, self.parameters, self.wind
