@@ -53,16 +53,31 @@ class DroneSimulationTests(unittest.TestCase):
             generate_random_scenarios(seed=42),
         )
 
-        records = list(run_flight_simulation(
-            gui=False,
-            env_params=BASELINE_SCENARIO,
-            scenario_name="baseline_test",
-            target_altitude=1.0,
-            hover_duration=0.1,
-        ))
+        records = [
+            dict(record)
+            for record in run_flight_simulation(
+                gui=False,
+                env_params=BASELINE_SCENARIO,
+                scenario_name="baseline_test",
+                target_altitude=1.0,
+                hover_duration=0.1,
+            )
+        ]
 
         validate_scenario_records(records, target_altitude=1.0)
         self.assertEqual(records[-1]["phase"], "landing")
+        self.assertEqual(records[-1]["episode_status"], "success")
+        self.assertEqual(records[-1]["termination_reason"], "stable_landing")
+
+    def test_flight_generator_marks_step_limit_as_timeout(self):
+        records = [
+            dict(record)
+            for record in run_flight_simulation(gui=False, max_steps=1)
+        ]
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[-1]["episode_status"], "timeout")
+        self.assertTrue(records[-1]["termination_reason"].startswith("max_steps_reached:"))
 
     def test_rotated_body_thrust_has_horizontal_component(self):
         parameters = DroneParameters()

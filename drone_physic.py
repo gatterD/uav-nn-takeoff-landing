@@ -78,14 +78,31 @@ def motor_thrusts(motors, parameters):
     return parameters.max_motor_thrust * parameters.motor_thrust_coefficient * clamp_motors(motors)
 
 
+def motor_positions(parameters):
+    """X layout, with arm_length measured radially from the center of mass.
+
+    The body frame is X forward, Y left, and Z up. Motor order is front-left,
+    front-right, rear-right, rear-left.
+    """
+    offset = parameters.arm_length / np.sqrt(2.0)
+    return np.array([
+        [offset, offset, 0.0],
+        [offset, -offset, 0.0],
+        [-offset, -offset, 0.0],
+        [-offset, offset, 0.0],
+    ])
+
+
 def motor_forces_and_moments(motors, parameters):
-    """Схема: M1 перед-слева, M2 перед-справа, M3 зад-справа, M4 зад-слева."""
+    """Compute r x F moments; M1/M3 spin CW and M2/M4 CCW viewed from +Z."""
     thrusts = motor_thrusts(motors, parameters)
     total_thrust = float(np.sum(thrusts))
-    roll_torque = parameters.arm_length * (thrusts[0] - thrusts[1] - thrusts[2] + thrusts[3])
-    pitch_torque = parameters.arm_length * (-thrusts[0] - thrusts[1] + thrusts[2] + thrusts[3])
-    yaw_torque = parameters.motor_torque_coefficient * (thrusts[0] - thrusts[1] + thrusts[2] - thrusts[3])
-    return thrusts, total_thrust, np.array([roll_torque, pitch_torque, yaw_torque])
+    thrust_vectors = thrusts[:, None] * np.array([0.0, 0.0, 1.0])
+    moments = np.cross(motor_positions(parameters), thrust_vectors).sum(axis=0)
+    moments[2] += parameters.motor_torque_coefficient * np.dot(
+        [1.0, -1.0, 1.0, -1.0], thrusts
+    )
+    return thrusts, total_thrust, moments
 
 
 def compute_forces_and_moments(state, motors, parameters, wind=None):
@@ -148,10 +165,14 @@ def integrate_state(state, motors, parameters, wind=None):
 
 def mix_controls(total_thrust, roll, pitch, yaw, parameters):
     """Смешивает команды тяги и моментов в четыре команды моторов."""
-    hover = float(total_thrust) / (4.0 * parameters.max_motor_thrust)
-    roll_term = float(roll) / (4.0 * parameters.arm_length * parameters.max_motor_thrust)
-    pitch_term = float(pitch) / (4.0 * parameters.arm_length * parameters.max_motor_thrust)
-    yaw_term = float(yaw) / (4.0 * parameters.motor_torque_coefficient * parameters.max_motor_thrust)
+    thrust_gain = parameters.max_motor_thrust * parameters.motor_thrust_coefficient
+    arm_projection = parameters.arm_length / np.sqrt(2.0)
+    hover = float(total_thrust) / (4.0 * thrust_gain)
+    roll_term = float(roll) / (4.0 * arm_projection * thrust_gain)
+    pitch_term = float(pitch) / (4.0 * arm_projection * thrust_gain)
+    yaw_term = float(yaw) / (
+        4.0 * parameters.motor_torque_coefficient * thrust_gain
+    )
     return clamp_motors([
         hover + roll_term - pitch_term + yaw_term,
         hover - roll_term - pitch_term - yaw_term,

@@ -4,6 +4,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from flight_log_validation import REQUIRED_COLUMNS as FLIGHT_LOG_REQUIRED_COLUMNS
+from flight_log_validation import validate_flight_log
+from flight_outcome import assess_landing
+
+REQUIRED_COLUMNS = list(FLIGHT_LOG_REQUIRED_COLUMNS)
 
 
 # =============================================================
@@ -22,7 +27,10 @@ def load_flight_data(path="flight_data.xlsx"):
             raise ValueError(f"Файл '{path}' не содержит листов.")
         return sheets
 
-    return {"single_run": pd.read_csv(file_path)}
+    try:
+        return {"single_run": pd.read_csv(file_path)}
+    except pd.errors.EmptyDataError as error:
+        raise ValueError(f"Flight log '{path}' is empty.") from error
 
 
 # =============================================================
@@ -47,17 +55,26 @@ def _scenario_info(name):
     return base_name, "single"
 
 
+def _altitude_error(df):
+    if {"target_altitude", "altitude"} <= set(df.columns):
+        return (df["target_altitude"].astype(float) - df["altitude"].astype(float)).abs()
+    if "altitude_error" in df.columns:
+        return df["altitude_error"].astype(float).abs()
+    return pd.Series(np.zeros(len(df)), index=df.index)
+
+
 # =============================================================
 # АНАЛИЗ СТАТИСТИКИ
 # =============================================================
 
 def analyze_flight_statistics(df):
+    df = validate_flight_log(df)
     df = df.copy()
     df["time"] = _as_numeric(df.get("time", pd.Series(np.nan, index=df.index)), "time")
     df["altitude"] = _as_numeric(df.get("altitude", df.get("z", pd.Series(np.nan, index=df.index))), "altitude")
     df["vertical_velocity"] = _as_numeric(df.get("vertical_velocity", df.get("vz", pd.Series(np.nan, index=df.index))), "vertical_velocity")
     df["throttle"] = _as_numeric(df.get("throttle", pd.Series(np.nan, index=df.index)), "throttle")
-    df["altitude_error"] = _as_numeric(df.get("altitude_error", pd.Series(np.nan, index=df.index)), "altitude_error")
+    altitude_error = _altitude_error(df)
 
     stats_dict = {
         "total_time": float(df["time"].iloc[-1] - df["time"].iloc[0]) if len(df) > 1 else 0.0,
@@ -72,7 +89,7 @@ def analyze_flight_statistics(df):
         "min_throttle": float(df["throttle"].min()) if df["throttle"].notna().any() else 0.0,
         "avg_throttle": float(df["throttle"].mean()) if df["throttle"].notna().any() else 0.0,
         "final_altitude": float(df["altitude"].iloc[-1]) if df["altitude"].notna().any() else 0.0,
-        "altitude_error_final": float(df["altitude_error"].iloc[-1]) if df["altitude_error"].notna().any() else 0.0,
+        "altitude_error_final": float(altitude_error.iloc[-1]) if len(altitude_error) else 0.0,
     }
     return stats_dict
 
@@ -82,6 +99,7 @@ def analyze_flight_statistics(df):
 # =============================================================
 
 def analyze_phases(df):
+    df = validate_flight_log(df)
     df = df.copy()
     if "phase" in df.columns:
         phase_series = df["phase"].astype(str).str.lower()
@@ -109,7 +127,7 @@ def analyze_phases(df):
             "height_gained": takeoff_height_gain,
             "avg_throttle": float(takeoff_data["throttle"].mean()) if len(takeoff_data) else 0.0,
             "altitude_at_end": float(takeoff_data["altitude"].iloc[-1]) if len(takeoff_data) else 0.0,
-            "avg_altitude_error": float(takeoff_data["altitude_error"].abs().mean()) if len(takeoff_data) else 0.0,
+            "avg_altitude_error": float(_altitude_error(takeoff_data).mean()) if len(takeoff_data) else 0.0,
         },
         "landing": {
             "duration": landing_duration,
@@ -117,7 +135,7 @@ def analyze_phases(df):
             "avg_throttle": float(landing_data["throttle"].mean()) if len(landing_data) else 0.0,
             "final_altitude": float(landing_data["altitude"].iloc[-1]) if len(landing_data) else 0.0,
             "final_velocity": float(landing_data["vertical_velocity"].iloc[-1]) if len(landing_data) else 0.0,
-            "avg_altitude_error": float(landing_data["altitude_error"].abs().mean()) if len(landing_data) else 0.0,
+            "avg_altitude_error": float(_altitude_error(landing_data).mean()) if len(landing_data) else 0.0,
         },
     }
     return phases_analysis
@@ -128,8 +146,9 @@ def analyze_phases(df):
 # =============================================================
 
 def analyze_stability(df):
+    df = validate_flight_log(df)
     df = df.copy()
-    altitude_error = df["altitude_error"].astype(float)
+    altitude_error = _altitude_error(df)
     vertical_velocity = df["vertical_velocity"].astype(float)
     throttle = df["throttle"].astype(float)
 
@@ -153,13 +172,9 @@ def analyze_stability(df):
 # =============================================================
 
 def analyze_altitude_tracking(df):
+    df = validate_flight_log(df)
     df = df.copy()
-    if "altitude_error" in df.columns:
-        altitude_error = df["altitude_error"].astype(float).abs()
-    elif "altitude" in df.columns and "target_altitude" in df.columns:
-        altitude_error = (df["altitude"] - df["target_altitude"]).abs()
-    else:
-        altitude_error = pd.Series(np.zeros(len(df)), index=df.index)
+    altitude_error = _altitude_error(df)
 
     return {
         "mae": float(altitude_error.mean()) if not altitude_error.empty else 0.0,
@@ -173,22 +188,40 @@ def analyze_altitude_tracking(df):
 
 def analyze_flight_metrics(df):
     """Возвращает дополнительные критерии качества взлета и посадки."""
-    numeric = df.copy()
-    for column in ["x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz"]:
-        if column in numeric:
-            numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
-    horizontal_error = np.sqrt(numeric["x"] ** 2 + numeric["y"] ** 2) if {"x", "y"} <= set(numeric) else pd.Series(dtype=float)
-    tilt = np.sqrt(numeric["roll"] ** 2 + numeric["pitch"] ** 2) if {"roll", "pitch"} <= set(numeric) else pd.Series(dtype=float)
-    angular_speed = np.sqrt(numeric["wx"] ** 2 + numeric["wy"] ** 2 + numeric["wz"] ** 2) if {"wx", "wy", "wz"} <= set(numeric) else pd.Series(dtype=float)
-    touchdown = numeric.iloc[-1] if len(numeric) else pd.Series(dtype=float)
+    numeric = validate_flight_log(df)
+    horizontal_error = np.sqrt(numeric["x"] ** 2 + numeric["y"] ** 2)
+    tilt = np.sqrt(numeric["roll"] ** 2 + numeric["pitch"] ** 2)
+    angular_speed = np.sqrt(numeric["wx"] ** 2 + numeric["wy"] ** 2 + numeric["wz"] ** 2)
+    touchdown = numeric.iloc[-1]
+    assessment = assess_landing(touchdown)
+    status_value = touchdown.get("episode_status", "")
+    status = "" if pd.isna(status_value) else str(status_value).lower()
+    reason_value = touchdown.get("termination_reason", "")
+    termination_reason = "" if pd.isna(reason_value) else str(reason_value)
+    landing_success = assessment["landing_success"] and status in ("", "success")
+    episode_status = status or ("success" if landing_success else "failure")
+    if not termination_reason:
+        termination_reason = (
+            "stable_landing"
+            if episode_status == "success"
+            else assessment["landing_reason"]
+        )
+    takeoff = numeric[numeric["phase"].str.lower() == "takeoff"]
     return {
         "landing_position_error": float(horizontal_error.iloc[-1]) if len(horizontal_error) else 0.0,
         "landing_vertical_speed": float(abs(touchdown.get("vz", 0.0))),
         "max_tilt": float(tilt.abs().max()) if len(tilt) else 0.0,
         "max_angular_speed": float(angular_speed.abs().max()) if len(angular_speed) else 0.0,
         "trajectory_deviation": float(horizontal_error.max()) if len(horizontal_error) else 0.0,
-        "takeoff_success": bool(numeric["z"].max() >= numeric.get("target_altitude", pd.Series([0.0])).max() - 0.1) if "z" in numeric else False,
-        "landing_success": bool(touchdown.get("z", 1.0) <= 0.05 and abs(touchdown.get("vz", 1.0)) <= 0.3),
+        "takeoff_success": bool(
+            len(takeoff)
+            and takeoff["z"].max() >= takeoff["target_altitude"].max() - 0.1
+        ),
+        "touchdown": assessment["touchdown"],
+        "landing_success": landing_success,
+        "landing_reason": assessment["landing_reason"],
+        "termination_reason": termination_reason,
+        "episode_status": episode_status,
     }
 
 
@@ -221,9 +254,10 @@ def plot_flight_data(df, save_path="flight_analysis_plots/", scenario_name="flig
     plt.grid(True, alpha=0.3)
 
     plt.subplot(1, 3, 3)
-    plt.plot(df["time"], df["altitude_error"], label="Ошибка высоты", linewidth=1.5, color="red")
+    altitude_error = _altitude_error(df)
+    plt.plot(df["time"], altitude_error, label="Ошибка высоты", linewidth=1.5, color="red")
     plt.axhline(y=0, color="k", linestyle="-", linewidth=0.5)
-    plt.fill_between(df["time"], df["altitude_error"], 0, alpha=0.3)
+    plt.fill_between(df["time"], altitude_error, 0, alpha=0.3)
     plt.xlabel("Время (с)")
     plt.ylabel("Ошибка (м)")
     plt.title("Ошибка отслеживания высоты")
@@ -286,6 +320,7 @@ def plot_flight_data(df, save_path="flight_analysis_plots/", scenario_name="flig
 # =============================================================
 
 def summarize_run(df, scenario_name):
+    df = validate_flight_log(df)
     flight_stats = analyze_flight_statistics(df)
     phases = analyze_phases(df)
     stability = analyze_stability(df)
@@ -363,7 +398,12 @@ def generate_flight_report(csv_path="flight_data.xlsx", save_path="flight_analys
         report_lines.append(f"Максимальный наклон: {np.degrees(flight_metrics['max_tilt']):.3f} град")
         report_lines.append(f"Максимальная угловая скорость: {flight_metrics['max_angular_speed']:.3f} рад/с")
         report_lines.append(f"Успешный взлет: {flight_metrics['takeoff_success']}")
+        report_lines.append(f"Касание поверхности: {flight_metrics['touchdown']}")
+        report_lines.append(f"Касание поверхности: {flight_metrics['touchdown']}")
         report_lines.append(f"Успешная посадка: {flight_metrics['landing_success']}")
+        report_lines.append(f"Статус эпизода: {flight_metrics['episode_status']}")
+        report_lines.append(f"Причина завершения: {flight_metrics['termination_reason']}")
+        report_lines.append(f"Состояние посадки: {flight_metrics['landing_reason']}")
         report_lines.append(f"Время в пределах ±0.5 м: {tracking['error_within_0_5m']:.2f}%")
         report_lines.append(f"Время в пределах ±0.1 м: {tracking['error_within_0_1m']:.2f}%")
         report_lines.append(f"Макс. вертикальная скорость: {stats['max_velocity']:.3f} м/с")

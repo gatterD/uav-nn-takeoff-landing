@@ -9,6 +9,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from flight_log_validation import validate_flight_log
 
 
 REQUIRED_COLUMNS = [
@@ -43,7 +44,10 @@ def load_data(file_path):
             raise ValueError(f"Файл '{file_path}' не содержит листов.")
         return sheets
 
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError as error:
+        raise ValueError(f"Flight log '{path}' is empty.") from error
 
 
 def validate_columns(df, required_columns=REQUIRED_COLUMNS):
@@ -59,6 +63,7 @@ def convert_columns(df, columns):
 
 
 def compute_metrics(df):
+    df = validate_flight_log(df)
     missing = validate_columns(df)
     if missing:
         raise ValueError(f"В данных отсутствуют обязательные столбцы: {missing}")
@@ -71,7 +76,6 @@ def compute_metrics(df):
 
     if len(df) < 2:
         raise ValueError('Недостаточно строк данных для анализа.')
-
     metrics = {}
     metrics['rows'] = len(df)
     metrics['total_time'] = float(df['time'].iloc[-1] - df['time'].iloc[0])
@@ -83,14 +87,20 @@ def compute_metrics(df):
     metrics['delta_x'] = float(metrics['final_position'][0] - metrics['initial_position'][0])
     metrics['delta_y'] = float(metrics['final_position'][1] - metrics['initial_position'][1])
     metrics['delta_z'] = float(metrics['final_position'][2] - metrics['initial_position'][2])
-    metrics['path_length'] = float(np.sqrt(metrics['delta_x']**2 + metrics['delta_y']**2 + metrics['delta_z']**2))
+    segments = np.sqrt(
+        np.diff(df['x']) ** 2 + np.diff(df['y']) ** 2 + np.diff(df['z']) ** 2
+    )
+    metrics['path_length'] = float(segments.sum())
+    metrics['displacement'] = float(np.sqrt(
+        metrics['delta_x']**2 + metrics['delta_y']**2 + metrics['delta_z']**2
+    ))
 
     metrics['max_altitude'] = float(df['altitude'].max())
     metrics['min_altitude'] = float(df['altitude'].min())
     metrics['mean_altitude'] = float(df['altitude'].mean())
     metrics['final_altitude'] = float(df['altitude'].iloc[-1])
 
-    errors = df['altitude_error'].abs()
+    errors = (df['target_altitude'] - df['altitude']).abs()
     metrics['mean_altitude_error'] = float(errors.mean())
     metrics['max_altitude_error'] = float(errors.max())
     metrics['error_within_0_1m'] = float((errors < 0.1).sum() / len(df) * 100)
@@ -117,10 +127,6 @@ def compute_metrics(df):
     metrics['mean_roll'] = float(np.degrees(df['roll'].abs().mean()))
     metrics['mean_pitch'] = float(np.degrees(df['pitch'].abs().mean()))
     metrics['mean_yaw'] = float(np.degrees(df['yaw'].abs().mean()))
-
-    metrics['distance_3d'] = float(np.sqrt(
-        np.diff(df['x'])**2 + np.diff(df['y'])**2 + np.diff(df['z'])**2
-    ).sum())
 
     if 'phase' in df.columns and df['phase'].notna().any():
         takeoff_df = df[df['phase'].astype(str).str.lower() == 'takeoff']
@@ -184,7 +190,6 @@ def generate_report(metrics, title=None):
         f"Сред. throttle:                    {format_value(metrics['mean_throttle'], '{:.3f}')}",
         f"Макс. throttle:                    {format_value(metrics['max_throttle'], '{:.3f}')}",
         f"Мин. throttle:                    {format_value(metrics['min_throttle'], '{:.3f}')}",
-        f"Интеграл throttle:                 {format_value(metrics['energy_proxy'], '{:.3f}')}",
         "",
         "--- Ориентация ---",
         f"Макс. roll:                        {format_value(metrics['max_roll'], '{:.1f}')}°",
@@ -198,8 +203,8 @@ def generate_report(metrics, title=None):
         f"Перемещение X:                     {format_value(metrics['delta_x'], '{:.3f}')} м",
         f"Перемещение Y:                     {format_value(metrics['delta_y'], '{:.3f}')} м",
         f"Перемещение Z:                     {format_value(metrics['delta_z'], '{:.3f}')} м",
-        f"Расстояние по прямой:              {format_value(metrics['path_length'], '{:.3f}')} м",
-        f"Пройденное расстояние 3D:          {format_value(metrics['distance_3d'], '{:.3f}')} м",
+        f"Конечное перемещение:              {format_value(metrics['displacement'], '{:.3f}')} м",
+        f"Длина траектории 3D:               {format_value(metrics['path_length'], '{:.3f}')} м",
     ]
 
     if metrics['takeoff_duration'] is not None or metrics['landing_duration'] is not None:
@@ -220,9 +225,6 @@ def save_report(report_text, output_path):
     output_path.write_text(report_text, encoding='utf-8')
     print(f"Отчёт сохранён: {output_path}")
 
-
-def plot_data(df, output_dir='flight_analysis_plots', title=None):
-    output_path = Path(output_dir)
     if title:
         output_path = output_path / title
     output_path.mkdir(parents=True, exist_ok=True)
@@ -239,7 +241,8 @@ def plot_data(df, output_dir='flight_analysis_plots', title=None):
     plt.close()
 
     plt.figure(figsize=(10, 4))
-    plt.plot(df['time'], df['altitude_error'], label='altitude_error', color='red')
+    altitude_error = df['target_altitude'] - df['altitude']
+    plt.plot(df['time'], altitude_error, label='altitude_error', color='red')
     plt.xlabel('time, s')
     plt.ylabel('error, m')
     plt.title('Altitude tracking error')
@@ -299,8 +302,6 @@ def analyze_file(file_path, report_path, output_dir, no_plot):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Анализ лога полёта дрона')
-    parser.add_argument('file', nargs='?', default='flight_data.xlsx', help='Путь к XLSX или CSV файлу')
     parser.add_argument('--report', default='flight_analysis_report.txt', help='Путь к текстовому отчету')
     parser.add_argument('--output-dir', default='flight_analysis_plots', help='Папка для графиков')
     parser.add_argument('--no-plot', action='store_true', help='Отключить генерацию графиков')

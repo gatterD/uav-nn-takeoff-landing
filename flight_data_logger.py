@@ -4,6 +4,8 @@ import random
 import pandas as pd
 from drone_controller import run_flight_simulation
 from drone_physic import DroneParameters
+from flight_log_validation import validate_flight_log
+from flight_outcome import assess_landing
 
 SAVE_PATH = "flight_data.csv"
 EXCEL_PATH = "flight_data.xlsx"
@@ -74,39 +76,25 @@ def generate_random_scenarios(rng=None, seed=0):
     return scenarios
 
 
-def validate_scenario_records(records, target_altitude=5.0):
+def validate_scenario_records(records, target_altitude=5.0, parameters=None):
     """Отклоняет сценарий, если он не выполнил взлет, зависание и посадку."""
     if not records:
         raise ValueError("Scenario produced no flight records")
+    parameters = parameters or DroneParameters()
+    validated = validate_flight_log(pd.DataFrame(records))
 
     required_phases = {"takeoff", "hover", "landing"}
-    phases = {record["phase"] for record in records}
+    phases = set(validated["phase"].astype(str))
     if not required_phases.issubset(phases):
         missing = ", ".join(sorted(required_phases - phases))
         raise ValueError(f"Scenario did not reach required phases: {missing}")
 
-    numeric_fields = (
-        "x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw", "wx", "wy", "wz"
-    )
-    if any(
-        not math.isfinite(float(record[field]))
-        for record in records
-        for field in numeric_fields
-    ):
-        raise ValueError("Scenario contains non-finite state values")
-
-    if max(record["z"] for record in records) < target_altitude - 0.1:
+    if validated["z"].max() < target_altitude - 0.1:
         raise ValueError("Scenario did not reach the target altitude")
 
-    final = records[-1]
-    horizontal_speed = math.hypot(final["vx"], final["vy"])
-    angular_speed = math.sqrt(final["wx"] ** 2 + final["wy"] ** 2 + final["wz"] ** 2)
-    if (
-        final["z"] > DroneParameters().ground_clearance + 0.02
-        or abs(final["vz"]) >= 0.15
-        or horizontal_speed >= 0.1
-        or angular_speed >= 0.1
-    ):
+    final = validated.iloc[-1]
+    assessment = assess_landing(final, parameters)
+    if final.get("episode_status") != "success" or not assessment["landing_success"]:
         raise ValueError("Scenario did not finish in a stable ground contact")
 
 
@@ -129,6 +117,8 @@ def save_flight_data_to_csv(flight_data_generator, output_path=SAVE_PATH):
         "target_x", "target_y", "target_z", "target_roll", "target_pitch", "target_yaw",
         "motor_1", "motor_2", "motor_3", "motor_4", "total_thrust", "mass", "max_motor_thrust",
         "wind_x", "wind_y", "wind_z", "throttle",
+        "ground_contact_height", "touchdown", "landing_success", "landing_reason",
+        "episode_status", "termination_reason",
     ]
     with open(output_path, mode="w", newline="") as f:
         writer = csv.writer(f)
@@ -161,7 +151,11 @@ def run_scenarios_and_save_excel(scenarios, gui=False, output_path=EXCEL_PATH):
         records = []
         for flight_data in run_flight_simulation(gui=gui, env_params=env_params, scenario_name=scenario_name):
             records.append(flight_data)
-        validate_scenario_records(records)
+        parameters = DroneParameters(
+            mass=float(env_params.get("mass", 1.0)),
+            max_motor_thrust=float(env_params.get("max_motor_thrust", 6.0)),
+        )
+        validate_scenario_records(records, parameters=parameters)
         scenario_results[scenario_name] = records
 
     save_flight_data_to_excel(scenario_results, output_path=output_path)

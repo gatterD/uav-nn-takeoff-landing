@@ -4,6 +4,7 @@ import numpy as np
 
 from drone_physic import DroneParameters, mix_controls
 from drone_simulation import DroneEnv
+from flight_outcome import assess_landing
 
 
 def altitude_controller(target_altitude, current_altitude, velocity_z, integral=0.0):
@@ -47,6 +48,9 @@ def run_flight_simulation(
     hover_steps = max(1, round(float(hover_duration) / env.TIME_STEP))
     hover_counter = 0
     integral = 0.0
+    last_record = None
+    episode_status = "in_progress"
+    termination_reason = ""
 
     try:
         for step in range(max_steps):
@@ -74,7 +78,8 @@ def run_flight_simulation(
                 parameters=env.parameters,
             )
             state = env.step(action)
-            yield {
+            landing = assess_landing(state, env.parameters)
+            record = {
                 "scenario": scenario_name,
                 "time": step * env.TIME_STEP,
                 "phase": phase,
@@ -99,16 +104,30 @@ def run_flight_simulation(
                 "drag_force_x": state["linear_drag_x"],
                 "drag_force_y": state["linear_drag_y"],
                 "drag_force_z": state["linear_drag_z"],
+                "ground_contact_height": landing["ground_contact_height"],
+                "touchdown": landing["touchdown"],
+                "landing_success": landing["landing_success"],
+                "landing_reason": landing["landing_reason"],
+                "episode_status": "in_progress",
+                "termination_reason": "",
             }
-            horizontal_speed = np.hypot(state["vx"], state["vy"])
-            angular_speed = np.linalg.norm([state["wx"], state["wy"], state["wz"]])
-            if (
-                phase == "landing"
-                and state["z"] <= env.parameters.ground_clearance + 0.02
-                and abs(state["vz"]) < 0.15
-                and horizontal_speed < 0.1
-                and angular_speed < 0.1
-            ):
+            if landing["landing_reason"] == "non_finite_state":
+                episode_status = "failure"
+                termination_reason = "non_finite_state"
+            elif phase == "landing" and landing["landing_success"]:
+                episode_status = "success"
+                termination_reason = "stable_landing"
+
+            if step == max_steps - 1 and episode_status == "in_progress":
+                episode_status = "timeout"
+                final_reason = landing["landing_reason"]
+                termination_reason = f"max_steps_reached:{final_reason}"
+
+            record["episode_status"] = episode_status
+            record["termination_reason"] = termination_reason if episode_status != "in_progress" else ""
+            last_record = record
+            yield record
+            if episode_status != "in_progress":
                 break
     finally:
         env.close()
