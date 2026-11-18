@@ -1,6 +1,5 @@
 .venv
-.flight_logs
-.tests
+flight_logs/
 
 __pycache__
 
@@ -10,4 +9,3 @@ flight_data.xlsx
 flight_analysis_plots
 requirements.txt
 flight_analysis_report.txt
-
