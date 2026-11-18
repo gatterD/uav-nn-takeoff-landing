@@ -8,11 +8,15 @@
 """
 
 import argparse
-import time
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 from drone_controller import altitude_controller
 from drone_simulation import DroneEnv
 from flight_outcome import assess_landing
+
+
+MANUAL_LOG_DIR = Path(__file__).resolve().parent / "manual_logs"
 
 
 def choose_wind_speed():
@@ -33,30 +37,44 @@ def choose_wind_speed():
         print("Введите неотрицательное число.")
 
 
-def choose_slowdown():
-    """Выбирает задержку между шагами симуляции."""
-    while True:
-        value = input("Замедление [1, 2, 4, 8, 16] (по умолчанию 8): ").strip()
-        if not value:
-            return 8.0
-        try:
-            slowdown = float(value)
-        except ValueError:
-            slowdown = 0.0
-        if slowdown in (1.0, 2.0, 4.0, 8.0, 16.0):
-            return slowdown
-        print("Выберите одно из значений: 1, 2, 4, 8 или 16.")
+def save_trajectory_plot(trajectory, output_path=None):
+    """Сохраняет траекторию полета в виде 3D-графика."""
+    if not trajectory:
+        raise ValueError("Cannot save an empty flight trajectory")
+    if output_path is None:
+        output_path = MANUAL_LOG_DIR / "manual_flight_trajectory.png"
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    x, y, z = zip(*trajectory)
+    figure = plt.figure(figsize=(10, 8))
+    axis = figure.add_subplot(111, projection="3d")
+    axis.plot(x, y, z, color="royalblue", label="Траектория")
+    axis.scatter(x[0], y[0], z[0], color="green", s=40, label="Старт")
+    axis.scatter(x[-1], y[-1], z[-1], color="red", s=40, label="Финиш")
+    axis.set_xlabel("x, м")
+    axis.set_ylabel("y, м")
+    axis.set_zlabel("z, м")
+    axis.set_title("3D-траектория полета")
+    axis.legend()
+    axis.grid(True)
+    try:
+        figure.savefig(output_path, dpi=150)
+    finally:
+        plt.close(figure)
+    print(f"График траектории сохранён: {output_path}")
+    return output_path
 
 
-def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
-    """Показывает автоматический цикл высоты без осевого управления."""
+def run_manual_flight(wind_speed=0.0, gui=True):
+    """Запускает полет без задержки между шагами и сохраняет его траекторию."""
     env = DroneEnv(gui=gui)
     env.set_wind(wind_x=wind_speed)
-    delay = env.TIME_STEP * slowdown
     target_altitude = 5.0
     phase = "takeoff"
     hover_steps = int(2.0 / env.TIME_STEP)
     hover_counter = 0
+    trajectory = []
 
     try:
         for step in range(20000):
@@ -84,6 +102,7 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
             }
 
             state = env.step(action)
+            trajectory.append((state["x"], state["y"], state["z"]))
             if step % 120 == 0:
                 print(
                     f"t={step * env.TIME_STEP:5.1f} с | "
@@ -96,11 +115,12 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
             ):
                 print("Посадка завершена")
                 break
-            time.sleep(delay)
         else:
             print("Сценарий не завершен: достигнут лимит шагов")
     finally:
         env.close()
+    if trajectory:
+        save_trajectory_plot(trajectory)
 
 
 def main():
@@ -108,14 +128,12 @@ def main():
         description="Демонстрационный полет с автоматическим управлением высотой"
     )
     parser.add_argument("--wind-speed", type=float, default=None)
-    parser.add_argument("--slowdown", type=float, choices=(1, 2, 4, 8, 16), default=None)
     args = parser.parse_args()
 
     wind_speed = args.wind_speed if args.wind_speed is not None else choose_wind_speed()
     if wind_speed < 0.0:
         parser.error("--wind-speed должен быть неотрицательным")
-    slowdown = args.slowdown or choose_slowdown()
-    run_manual_flight(wind_speed=wind_speed, slowdown=slowdown)
+    run_manual_flight(wind_speed=wind_speed)
 
 
 if __name__ == "__main__":
