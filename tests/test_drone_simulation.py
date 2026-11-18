@@ -1,6 +1,7 @@
 import unittest
 
 import numpy as np
+import pandas as pd
 from scipy.spatial.transform import Rotation
 
 from drone_physic import (
@@ -20,6 +21,7 @@ from flight_data_logger import (
     generate_random_scenarios,
     validate_scenario_records,
 )
+from flight_log_validation import REQUIRED_NUMERIC_COLUMNS, validate_flight_log
 
 
 class DroneSimulationTests(unittest.TestCase):
@@ -64,10 +66,84 @@ class DroneSimulationTests(unittest.TestCase):
             )
         ]
 
-        validate_scenario_records(records, target_altitude=1.0)
+        validate_scenario_records(
+            records, target_altitude=1.0, hover_duration=0.1
+        )
         self.assertEqual(records[-1]["phase"], "landing")
         self.assertEqual(records[-1]["episode_status"], "success")
         self.assertEqual(records[-1]["termination_reason"], "stable_landing")
+
+        wrong_order = [dict(record) for record in records]
+        first_hover = next(
+            index for index, record in enumerate(wrong_order)
+            if record["phase"] == "hover"
+        )
+        wrong_order[first_hover]["phase"] = "landing"
+        with self.assertRaisesRegex(ValueError, "phases must follow"):
+            validate_scenario_records(
+                wrong_order, target_altitude=1.0, hover_duration=0.1
+            )
+
+        short_hover = [dict(record) for record in records]
+        first_landing = next(
+            index for index, record in enumerate(short_hover)
+            if record["phase"] == "landing"
+        )
+        short_hover[first_landing - 1]["phase"] = "landing"
+        with self.assertRaisesRegex(ValueError, "required duration"):
+            validate_scenario_records(
+                short_hover, target_altitude=1.0, hover_duration=0.1
+            )
+
+    def test_seeded_environment_and_difficulty_combinations_are_classified(self):
+        scenarios = generate_random_scenarios(seed=42)
+        self.assertEqual(len(scenarios), 9)
+
+        max_steps = 10000
+        for scenario_name, env_params in scenarios.items():
+            with self.subTest(scenario=scenario_name):
+                records = [
+                    dict(record)
+                    for record in run_flight_simulation(
+                        gui=False,
+                        env_params=env_params,
+                        scenario_name=scenario_name,
+                        target_altitude=1.0,
+                        hover_duration=0.1,
+                        max_steps=max_steps,
+                    )
+                ]
+
+                self.assertGreater(len(records), 0)
+                self.assertLessEqual(len(records), max_steps)
+                validated = validate_flight_log(pd.DataFrame(records))
+                self.assertTrue(
+                    np.isfinite(
+                        validated[list(REQUIRED_NUMERIC_COLUMNS)].to_numpy()
+                    ).all()
+                )
+                self.assertGreaterEqual(validated["z"].max(), 0.9)
+                self.assertIn("hover", validated["phase"].tolist())
+
+                if records[-1]["episode_status"] == "success":
+                    self.assertEqual(records[-1]["phase"], "landing")
+                    self.assertEqual(
+                        records[-1]["termination_reason"], "stable_landing"
+                    )
+                    validate_scenario_records(
+                        records, target_altitude=1.0, hover_duration=0.1
+                    )
+                else:
+                    self.assertIn(
+                        records[-1]["episode_status"], ("failure", "timeout")
+                    )
+                    self.assertTrue(records[-1]["termination_reason"])
+                    with self.assertRaisesRegex(
+                        ValueError, "stable ground contact"
+                    ):
+                        validate_scenario_records(
+                            records, target_altitude=1.0, hover_duration=0.1
+                        )
 
     def test_flight_generator_marks_step_limit_as_timeout(self):
         records = [

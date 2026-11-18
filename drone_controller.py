@@ -1,5 +1,7 @@
 """Контроллеры формируют action и не изменяют состояние DroneEnv напрямую."""
 
+import math
+
 import numpy as np
 
 from drone_physic import DroneParameters, mix_controls
@@ -45,7 +47,7 @@ def run_flight_simulation(
         )
     target_altitude = float(target_altitude)
     phase = "takeoff"
-    hover_steps = max(1, round(float(hover_duration) / env.TIME_STEP))
+    hover_steps = max(1, math.ceil(float(hover_duration) / env.TIME_STEP))
     hover_counter = 0
     integral = 0.0
     last_record = None

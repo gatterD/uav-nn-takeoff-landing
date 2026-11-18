@@ -112,9 +112,9 @@ def compute_metrics(df):
     throttle = df['throttle'].to_numpy(dtype=float)
     time_vals = df['time'].to_numpy(dtype=float)
     if len(throttle) > 1:
-        metrics['energy_proxy'] = float(np.sum((throttle[:-1] + throttle[1:]) * np.diff(time_vals) / 2.0))
+        metrics['throttle_integral'] = float(np.sum((throttle[:-1] + throttle[1:]) * np.diff(time_vals) / 2.0))
     else:
-        metrics['energy_proxy'] = float(throttle[0] if len(throttle) == 1 else 0.0)
+        metrics['throttle_integral'] = float(throttle[0] if len(throttle) == 1 else 0.0)
 
     metrics['max_vertical_velocity'] = float(df['vertical_velocity'].max())
     metrics['min_vertical_velocity'] = float(df['vertical_velocity'].min())
@@ -225,6 +225,9 @@ def save_report(report_text, output_path):
     output_path.write_text(report_text, encoding='utf-8')
     print(f"Отчёт сохранён: {output_path}")
 
+
+def plot_data(df, output_dir, title=None):
+    output_path = Path(output_dir)
     if title:
         output_path = output_path / title
     output_path.mkdir(parents=True, exist_ok=True)
@@ -268,6 +271,22 @@ def save_report(report_text, output_path):
     plt.savefig(output_path / 'throttle.png', dpi=150)
     plt.close()
 
+    figure = plt.figure(figsize=(10, 8))
+    axis = figure.add_subplot(111, projection='3d')
+    axis.plot(df['x'], df['y'], df['z'], color='royalblue', label='Flight path')
+    axis.scatter(df['x'].iloc[0], df['y'].iloc[0], df['z'].iloc[0],
+                 color='green', s=40, label='Start')
+    axis.scatter(df['x'].iloc[-1], df['y'].iloc[-1], df['z'].iloc[-1],
+                 color='red', s=40, label='End')
+    axis.set_xlabel('x, m')
+    axis.set_ylabel('y, m')
+    axis.set_zlabel('z, m')
+    axis.set_title(f'3D flight trajectory: {title}' if title else '3D flight trajectory')
+    axis.legend()
+    axis.grid(True)
+    figure.savefig(output_path / 'trajectory_3d.png', dpi=150)
+    plt.close(figure)
+
     plt.figure(figsize=(8, 6))
     plt.scatter(df['x'], df['y'], c=df['z'], cmap='viridis', s=2)
     plt.xlabel('x, m')
@@ -302,6 +321,13 @@ def analyze_file(file_path, report_path, output_dir, no_plot):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Анализ данных полёта')
+    parser.add_argument(
+        'file',
+        nargs='?',
+        default='flight_data.xlsx',
+        help='Путь к файлу с данными полёта (по умолчанию: flight_data.xlsx)',
+    )
     parser.add_argument('--report', default='flight_analysis_report.txt', help='Путь к текстовому отчету')
     parser.add_argument('--output-dir', default='flight_analysis_plots', help='Папка для графиков')
     parser.add_argument('--no-plot', action='store_true', help='Отключить генерацию графиков')

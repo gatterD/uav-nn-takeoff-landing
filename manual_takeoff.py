@@ -12,6 +12,7 @@ import time
 
 from drone_controller import altitude_controller
 from drone_simulation import DroneEnv
+from flight_outcome import assess_landing
 
 
 def choose_wind_speed():
@@ -89,14 +90,9 @@ def run_manual_flight(wind_speed=0.0, slowdown=8.0, gui=True):
                     f"этап={phase} | высота={state['z']:.2f} м"
                 )
 
-            horizontal_speed = (state["vx"] ** 2 + state["vy"] ** 2) ** 0.5
-            angular_speed = (state["wx"] ** 2 + state["wy"] ** 2 + state["wz"] ** 2) ** 0.5
             if (
                 phase == "landing"
-                and state["z"] <= env.parameters.ground_clearance + 0.02
-                and abs(state["vz"]) < 0.15
-                and horizontal_speed < 0.1
-                and angular_speed < 0.1
+                and assess_landing(state, env.parameters)["landing_success"]
             ):
                 print("Посадка завершена")
                 break

@@ -76,18 +76,24 @@ def generate_random_scenarios(rng=None, seed=0):
     return scenarios
 
 
-def validate_scenario_records(records, target_altitude=5.0, parameters=None):
+def validate_scenario_records(
+    records, target_altitude=5.0, parameters=None, hover_duration=2.0
+):
     """Отклоняет сценарий, если он не выполнил взлет, зависание и посадку."""
     if not records:
         raise ValueError("Scenario produced no flight records")
     parameters = parameters or DroneParameters()
     validated = validate_flight_log(pd.DataFrame(records))
 
-    required_phases = {"takeoff", "hover", "landing"}
-    phases = set(validated["phase"].astype(str))
-    if not required_phases.issubset(phases):
-        missing = ", ".join(sorted(required_phases - phases))
-        raise ValueError(f"Scenario did not reach required phases: {missing}")
+    phases = validated["phase"].astype(str).str.strip().str.lower()
+    phase_transitions = phases[phases.ne(phases.shift())].tolist()
+    if phase_transitions != ["takeoff", "hover", "landing"]:
+        raise ValueError("Scenario phases must follow takeoff, hover, landing")
+
+    hover_start = validated.loc[phases == "hover", "time"].iloc[0]
+    landing_start = validated.loc[phases == "landing", "time"].iloc[0]
+    if landing_start - hover_start + 1e-9 < hover_duration:
+        raise ValueError("Scenario did not maintain hover for the required duration")
 
     if validated["z"].max() < target_altitude - 0.1:
         raise ValueError("Scenario did not reach the target altitude")

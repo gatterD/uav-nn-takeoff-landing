@@ -41,6 +41,15 @@ class FlightAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(tracking["mae"], 0.36)
         self.assertAlmostEqual(metrics["mean_altitude_error"], 0.36)
 
+    def test_throttle_integral_is_not_reported_as_energy(self):
+        dataframe = make_log()
+        dataframe["throttle"] = [0.0, 1.0, 0.0]
+
+        metrics = compute_metrics(dataframe)
+
+        self.assertAlmostEqual(metrics["throttle_integral"], 1.0)
+        self.assertNotIn("energy_proxy", metrics)
+
     def test_flight_analysis_uses_shared_success_and_episode_status(self):
         dataframe = make_log()
 
@@ -51,6 +60,18 @@ class FlightAnalysisTests(unittest.TestCase):
         self.assertTrue(metrics["landing_success"])
         self.assertEqual(metrics["episode_status"], "success")
         self.assertEqual(summary["flight_metrics"]["landing_reason"], "stable_landing")
+
+    def test_horizontal_errors_are_measured_from_each_target_position(self):
+        dataframe = make_log()
+        dataframe["x"] = [2.0, 3.0, 4.0]
+        dataframe["y"] = [0.0, 0.0, 0.0]
+        dataframe["target_x"] = [1.0, 1.0, 2.0]
+        dataframe["target_y"] = [0.0, 1.0, 0.0]
+
+        metrics = analyze_flight_metrics(dataframe)
+
+        self.assertAlmostEqual(metrics["landing_position_error"], 2.0)
+        self.assertAlmostEqual(metrics["trajectory_deviation"], 5.0 ** 0.5)
 
     def test_touchdown_is_not_success_when_horizontal_speed_is_high(self):
         dataframe = make_log()

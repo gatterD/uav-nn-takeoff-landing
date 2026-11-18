@@ -29,6 +29,107 @@ def make_state(z=1.0, orientation=None, velocity=None, angular_velocity=None):
 
 
 class DronePhysicsTests(unittest.TestCase):
+    def test_single_axis_angular_rates_produce_expected_rotations(self):
+        parameters = DroneParameters(angular_drag_coefficient=0.0)
+        hover_motor = (
+            parameters.mass * parameters.gravity
+            / (4.0 * parameters.max_motor_thrust * parameters.motor_thrust_coefficient)
+        )
+
+        for axis in range(3):
+            with self.subTest(axis=axis):
+                angular_velocity = np.zeros(3)
+                angular_velocity[axis] = 0.6
+                state = make_state(z=10.0, angular_velocity=angular_velocity)
+
+                next_state, _ = integrate_state(state, [hover_motor] * 4, parameters)
+
+                expected_orientation = np.zeros(3)
+                expected_orientation[axis] = 0.6 * parameters.time_step
+                np.testing.assert_allclose(next_state.orientation, expected_orientation)
+                np.testing.assert_allclose(next_state.angular_velocity, angular_velocity)
+
+    def test_zero_angular_velocity_preserves_orientation(self):
+        parameters = DroneParameters()
+        hover_motor = (
+            parameters.mass * parameters.gravity
+            / (4.0 * parameters.max_motor_thrust * parameters.motor_thrust_coefficient)
+        )
+        orientation = np.array([0.2, -0.1, 0.3])
+
+        next_state, _ = integrate_state(
+            make_state(z=10.0, orientation=orientation),
+            [hover_motor] * 4,
+            parameters,
+        )
+
+        np.testing.assert_allclose(next_state.orientation, orientation, atol=1e-12)
+        np.testing.assert_array_equal(next_state.angular_velocity, np.zeros(3))
+
+    def test_applied_motor_moment_changes_angular_velocity_by_inertia(self):
+        parameters = DroneParameters()
+        motors = [0.6, 0.4, 0.4, 0.6]
+        state = make_state(z=10.0)
+        forces = compute_forces_and_moments(state, motors, parameters)
+
+        next_state, _ = integrate_state(state, motors, parameters)
+
+        expected = parameters.inverse_inertia @ forces["motor_moment"]
+        expected *= parameters.time_step
+        np.testing.assert_allclose(next_state.angular_velocity, expected)
+        self.assertGreater(np.linalg.norm(next_state.angular_velocity), 0.0)
+
+    def test_initial_rotation_decays_without_external_moment(self):
+        parameters = DroneParameters()
+        hover_motor = (
+            parameters.mass * parameters.gravity
+            / (4.0 * parameters.max_motor_thrust * parameters.motor_thrust_coefficient)
+        )
+        initial_rate = 0.8
+        state = make_state(z=10.0, angular_velocity=[initial_rate, 0.0, 0.0])
+        forces = compute_forces_and_moments(state, [hover_motor] * 4, parameters)
+
+        next_state, _ = integrate_state(state, [hover_motor] * 4, parameters)
+
+        self.assertAlmostEqual(np.linalg.norm(forces["motor_moment"]), 0.0)
+        expected_rate = initial_rate * (
+            1.0 - parameters.angular_drag_coefficient / parameters.Ixx
+            * parameters.time_step
+        )
+        self.assertAlmostEqual(next_state.angular_velocity[0], expected_rate)
+        self.assertAlmostEqual(
+            next_state.orientation[0],
+            expected_rate * parameters.time_step,
+        )
+
+    def test_prolonged_single_axis_rotation_remains_finite_and_stable(self):
+        parameters = DroneParameters(angular_drag_coefficient=0.0)
+        hover_motor = (
+            parameters.mass * parameters.gravity
+            / (4.0 * parameters.max_motor_thrust * parameters.motor_thrust_coefficient)
+        )
+        initial_rate = 5.0
+        state = make_state(z=10.0, angular_velocity=[0.0, 0.0, initial_rate])
+
+        for _ in range(10000):
+            state, _ = integrate_state(state, [hover_motor] * 4, parameters)
+
+        total_angle = initial_rate * parameters.time_step * 10000
+        expected_yaw = np.arctan2(np.sin(total_angle), np.cos(total_angle))
+        values = np.concatenate((
+            state.position,
+            state.velocity,
+            state.orientation,
+            state.angular_velocity,
+        ))
+        self.assertTrue(np.isfinite(values).all())
+        np.testing.assert_allclose(
+            state.orientation,
+            [0.0, 0.0, expected_yaw],
+            atol=1e-8,
+        )
+        self.assertAlmostEqual(state.angular_velocity[2], initial_rate)
+
     def test_motor_positions_are_diagonal_with_arm_length_as_radius(self):
         parameters = DroneParameters(arm_length=0.3)
         positions = motor_positions(parameters)

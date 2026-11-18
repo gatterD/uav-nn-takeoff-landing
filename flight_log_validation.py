@@ -13,6 +13,8 @@ REQUIRED_NUMERIC_COLUMNS = (
     "throttle",
     "x",
     "y",
+    "target_x",
+    "target_y",
     "z",
     "vx",
     "vy",

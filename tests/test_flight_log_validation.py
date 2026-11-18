@@ -33,6 +33,10 @@ class FlightLogValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required columns"):
             validate_flight_log(valid_log().drop(columns=["wx"]))
 
+    def test_rejects_missing_target_position(self):
+        with self.assertRaisesRegex(ValueError, "missing required columns"):
+            validate_flight_log(valid_log().drop(columns=["target_x"]))
+
     def test_rejects_nan_and_infinity_in_physical_columns(self):
         for invalid in (float("nan"), float("inf")):
             dataframe = valid_log()

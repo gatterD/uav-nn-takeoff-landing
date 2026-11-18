@@ -189,7 +189,10 @@ def analyze_altitude_tracking(df):
 def analyze_flight_metrics(df):
     """Возвращает дополнительные критерии качества взлета и посадки."""
     numeric = validate_flight_log(df)
-    horizontal_error = np.sqrt(numeric["x"] ** 2 + numeric["y"] ** 2)
+    horizontal_error = np.sqrt(
+        (numeric["x"] - numeric["target_x"]) ** 2
+        + (numeric["y"] - numeric["target_y"]) ** 2
+    )
     tilt = np.sqrt(numeric["roll"] ** 2 + numeric["pitch"] ** 2)
     angular_speed = np.sqrt(numeric["wx"] ** 2 + numeric["wy"] ** 2 + numeric["wz"] ** 2)
     touchdown = numeric.iloc[-1]
